@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import autostart
 from config import config, PROVIDER_GROQ, PROVIDER_OPENAI, PROVIDER_SPEC
 
 
@@ -265,6 +266,17 @@ class SettingsDialog(QDialog):
         self._fillers.setChecked(bool(config.get("remove_filler_words", True)))
         form.addRow("", self._fillers)
 
+        self._autostart = QCheckBox("Start FlowClone when Windows starts")
+        if autostart.is_supported():
+            self._autostart.setChecked(autostart.is_enabled())
+        else:
+            self._autostart.setEnabled(False)
+            self._autostart.setToolTip(
+                "Only available in the installed FlowClone.exe build. "
+                "When running from source, add a shortcut to shell:startup instead."
+            )
+        form.addRow("", self._autostart)
+
         self._dictionary = QPlainTextEdit()
         self._dictionary.setPlaceholderText("One term per line (proper nouns, jargon…)")
         self._dictionary.setPlainText("\n".join(config.dictionary_words()))
@@ -321,6 +333,22 @@ class SettingsDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "FlowClone", f"Failed to save settings: {e}")
             return
+
+        # Apply auto-start preference. Registry writes are separate from the
+        # JSON save above — failure here shouldn't wipe the rest of the save.
+        if autostart.is_supported():
+            try:
+                if self._autostart.isChecked():
+                    autostart.enable()
+                else:
+                    autostart.disable()
+            except OSError as e:
+                QMessageBox.warning(
+                    self,
+                    "FlowClone",
+                    f"Couldn't update Windows startup entry:\n{e}\n\n"
+                    "Other settings were saved.",
+                )
 
         self.saved.emit()
         self.accept()
