@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# User-specific data (may contain proprietary terms, names, jargon)
+dictionary.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Build artefacts
+build/
+dist/
+*.spec
+
+# Editor
+.vscode/
+.idea/
+
+# OS cruft
+Thumbs.db
+.DS_Store
+desktop.ini

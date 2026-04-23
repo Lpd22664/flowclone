@@ -1,0 +1,11 @@
+openai>=1.50.0
+sounddevice>=0.4.6
+numpy>=1.24
+scipy>=1.10
+keyboard>=0.13.5
+pyperclip>=1.8.2
+PyQt6>=6.5
+pystray>=0.19.4
+Pillow>=10.0.0
+pywin32>=306
+python-dotenv>=1.0.0

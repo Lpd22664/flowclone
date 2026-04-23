@@ -1,0 +1,12 @@
+# FlowClone custom dictionary — copy or rename to dictionary.txt to use.
+# One term per line. These are passed to Whisper as prompt hints so unusual
+# spellings (product names, acronyms, proper nouns, technical jargon) come
+# out correctly in transcripts.
+#
+# Blank lines and lines starting with '#' are ignored.
+#
+# Example:
+# Kubernetes
+# PyQt6
+# Anthropic
+# FlowClone

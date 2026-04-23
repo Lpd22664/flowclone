@@ -1,0 +1,12 @@
+{
+    "provider": "groq",
+    "language": "en",
+    "push_to_talk_hotkey": "right alt",
+    "command_mode_hotkey": "ctrl+shift+space",
+    "settings_hotkey": "ctrl+shift+f",
+    "ai_cleanup_enabled": true,
+    "remove_filler_words": true,
+    "min_recording_seconds": 0.5,
+    "command_mode_silence_seconds": 1.5,
+    "command_mode_silence_threshold": 0.01
+}
