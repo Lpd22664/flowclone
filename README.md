@@ -157,6 +157,7 @@ PRs welcome. If you're planning something big, open an issue first so we can ali
 - **Push-to-talk works but nothing pastes** — the active app may block simulated Ctrl+V. Try a different app to confirm. (Console windows — cmd.exe, PowerShell, Windows Terminal — are auto-detected and typed into directly, so Ctrl+V setting doesn't matter there.)
 - **Hotkeys don't fire in one specific app** — that app is probably running elevated. Relaunch FlowClone from an elevated terminal.
 - **Overlay appears but text never arrives** — check network; a transcription failure shows "Transcription failed" briefly, then the overlay fades.
+- **Overlay doesn't appear at all in one specific app** — that app may be claiming topmost z-order. FlowClone re-asserts topmost on every show since v0.1.3, which fixes most cases (notably Windows Terminal / cmd / PowerShell). If you still hit it, set `FLOWCLONE_DEBUG=1` before launching and the app will log every hotkey event + foreground-window class to `debug.log` (next to `.env` — i.e. `%APPDATA%\FlowClone\debug.log` for the installed EXE, or next to `main.py` for source runs). Share that file in an issue.
 
 ## License
 

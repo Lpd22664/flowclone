@@ -2,7 +2,7 @@
 
 Glass pill, bottom-center. Content:  [ status dot | visualiser | label ]
 
-IMPORTANT — two invariants preventing past bugs:
+IMPORTANT — three invariants preventing past bugs:
 
 1. We paint the drop shadow ourselves (not QGraphicsDropShadowEffect). Stacking
    a shadow effect on the inner pill + an opacity effect on the outer widget
@@ -14,8 +14,19 @@ IMPORTANT — two invariants preventing past bugs:
    rectangle — visible as a "transparent box with a border" around the pill.
    A single graphics effect (with no other effects in the tree) avoids layered
    mode and has no nesting conflict.
+
+3. After every show() we re-assert HWND_TOPMOST via SetWindowPos. Qt's
+   WindowStaysOnTopHint is honored at widget-create time, but topmost is a
+   first-come-first-served z-ordering in Windows — if another topmost window
+   (some terminals, tooltips, screen-capture frames) claims the topmost slot
+   after us, we slip behind it. Console windows (cmd, PowerShell, Windows
+   Terminal) are the main repro: the overlay would just never become visible.
+   Native SetWindowPos on each show puts us back on top.
 """
 from __future__ import annotations
+
+import ctypes
+import sys
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -35,7 +46,43 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import debug_log
 from visualiser import BarVisualiser, MODE_DONE, MODE_IDLE, MODE_LISTEN, MODE_PROCESS
+
+
+# --- Native topmost (Windows only) --------------------------------------
+# See invariant 3 in the module docstring.
+
+if sys.platform == "win32":
+    from ctypes import wintypes
+
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.UINT,
+    ]
+    _user32.SetWindowPos.restype = wintypes.BOOL
+
+    _HWND_TOPMOST = -1
+    _SWP_NOSIZE = 0x0001
+    _SWP_NOMOVE = 0x0002
+    _SWP_NOACTIVATE = 0x0010
+    _SWP_SHOWWINDOW = 0x0040
+    _SWP_FLAGS = _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE | _SWP_SHOWWINDOW
+
+    def _assert_topmost(hwnd_int: int) -> None:
+        try:
+            _user32.SetWindowPos(
+                wintypes.HWND(hwnd_int),
+                wintypes.HWND(_HWND_TOPMOST),
+                0, 0, 0, 0, _SWP_FLAGS,
+            )
+        except Exception:
+            pass
+else:
+    def _assert_topmost(hwnd_int: int) -> None:
+        pass
 
 
 # --- Design tokens ------------------------------------------------------
@@ -242,6 +289,15 @@ class Overlay(QWidget):
         if not self.isVisible():
             self._opacity.setOpacity(0.0)
             self.show()
+
+        # Invariant 3: re-assert HWND_TOPMOST. Qt sometimes doesn't win the
+        # z-order race against terminal/console windows on Windows.
+        try:
+            _assert_topmost(int(self.winId()))
+        except Exception:
+            pass
+
+        debug_log.log("overlay.show", state=self._state)
 
         self._fade.stop()
         self._fade.setDuration(180)

@@ -1,10 +1,19 @@
-"""Global hotkey listener. Runs on a daemon thread managed by the `keyboard` lib."""
+"""Global hotkey listener. Runs on a daemon thread managed by the `keyboard` lib.
+
+Important Windows constraint: the WH_KEYBOARD_LL callback must return within
+~300 ms (LowLevelHooksTimeout default) or Windows silently disables the hook
+for the rest of the session. Starting a sounddevice stream can take 100–200 ms
+on USB/Bluetooth microphones, so we dispatch press/release handlers onto a
+worker thread and return immediately from the hook.
+"""
 from __future__ import annotations
 
 import threading
 from typing import Callable, Optional
 
 import keyboard
+
+import debug_log
 
 
 class HotkeyManager:
@@ -59,22 +68,33 @@ class HotkeyManager:
         return False
 
     def _on_ptt_event(self, event: keyboard.KeyboardEvent):
+        debug_log.log(
+            "hook.event",
+            type=event.event_type,
+            name=event.name,
+            scan=getattr(event, "scan_code", None),
+        )
         if not self._ptt_key_matches(event):
             return
         if event.event_type == keyboard.KEY_DOWN:
             if not self._ptt_down:
                 self._ptt_down = True
-                try:
-                    self._on_ptt_press()
-                except Exception:
-                    pass
+                debug_log.log("hook.ptt_down", name=event.name)
+                # Dispatch off the hook thread. See module docstring — LL hook
+                # callbacks that exceed LowLevelHooksTimeout get silently
+                # disabled by Windows.
+                threading.Thread(
+                    target=self._safe(self._on_ptt_press),
+                    daemon=True, name="ptt-press",
+                ).start()
         elif event.event_type == keyboard.KEY_UP:
             if self._ptt_down:
                 self._ptt_down = False
-                try:
-                    self._on_ptt_release()
-                except Exception:
-                    pass
+                debug_log.log("hook.ptt_up", name=event.name)
+                threading.Thread(
+                    target=self._safe(self._on_ptt_release),
+                    daemon=True, name="ptt-release",
+                ).start()
 
     # --- Registration ---------------------------------------------------
 

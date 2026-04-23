@@ -6,6 +6,9 @@
 # User-specific data (may contain proprietary terms, names, jargon)
 dictionary.txt
 
+# Diagnostic log (opt-in, written when FLOWCLONE_DEBUG=1)
+debug.log
+
 # Python
 __pycache__/
 *.pyc
