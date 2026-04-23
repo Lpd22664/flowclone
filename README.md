@@ -91,7 +91,11 @@ When running from source, the same files live next to `main.py` (all gitignored 
 
 ## Admin rights
 
-The `keyboard` library's global hooks **require admin rights to intercept input inside other elevated processes** (Task Manager, elevated terminals, some games). For everyday apps — browsers, editors, chat clients, Word, Outlook — no elevation is needed. If push-to-talk doesn't work in a specific app, try running `python main.py` from an elevated terminal.
+Windows User Interface Privilege Isolation (UIPI) **blocks a non-admin process from typing into an admin-level window**. So if FlowClone is running normally and your cmd / PowerShell / Windows Terminal is elevated, push-to-talk will record and transcribe but the text will never arrive — the `SendInput` call is silently rejected.
+
+FlowClone detects this. When injection is blocked you'll see *"Target window is elevated — right-click tray → Run as admin"*, and the tray icon gains a **Run as administrator** item that relaunches via UAC. Once FlowClone is elevated, push-to-talk works into any terminal (elevated or not). The tray header reads *FlowClone (admin)* when running elevated.
+
+If you routinely use admin terminals, the simplest setup is to always launch FlowClone as admin — right-click `FlowClone.exe` → *Run as administrator*, or set that as the default under *Properties → Compatibility → Run this program as an administrator*. For everyday non-admin apps (browsers, Word, Outlook, most editors) normal FlowClone is fine — no elevation needed.
 
 ## How the flow works
 
@@ -158,6 +162,7 @@ PRs welcome. If you're planning something big, open an issue first so we can ali
 - **Hotkeys don't fire in one specific app** — that app is probably running elevated. Relaunch FlowClone from an elevated terminal.
 - **Overlay appears but text never arrives** — check network; a transcription failure shows "Transcription failed" briefly, then the overlay fades.
 - **Overlay doesn't appear at all in one specific app** — that app may be claiming topmost z-order. FlowClone re-asserts topmost on every show since v0.1.3, which fixes most cases (notably Windows Terminal / cmd / PowerShell). If you still hit it, set `FLOWCLONE_DEBUG=1` before launching and the app will log every hotkey event + foreground-window class to `debug.log` (next to `.env` — i.e. `%APPDATA%\FlowClone\debug.log` for the installed EXE, or next to `main.py` for source runs). Share that file in an issue.
+- **Overlay says "Target window is elevated — right-click tray → Run as admin"** — the focused window is running at High integrity (e.g. an admin cmd) and FlowClone isn't. Click the tray option to relaunch elevated; see *Admin rights* above.
 
 ## License
 

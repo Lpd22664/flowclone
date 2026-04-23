@@ -24,6 +24,15 @@ from ctypes import wintypes
 import keyboard
 import pyperclip
 
+import debug_log
+import elevation
+
+
+class ElevationRequired(Exception):
+    """Raised when SendInput is rejected because the target window is at a
+    higher integrity level than this process. The only fix is to relaunch
+    FlowClone as administrator."""
+
 
 # ---------------------------------------------------------------------------
 # Win32 bindings (kept private — this module never leaks them)
@@ -88,9 +97,14 @@ def _is_foreground_console() -> bool:
     return _foreground_window_class() in _CONSOLE_CLASSES
 
 
-def _send_inputs(*inputs: _INPUT) -> None:
+def _send_inputs(*inputs: _INPUT) -> int:
+    """Returns the number of events actually inserted. On UIPI block
+    (non-elevated process sending to elevated window) this is 0 with
+    GetLastError == 5 (ERROR_ACCESS_DENIED)."""
     arr = (_INPUT * len(inputs))(*inputs)
-    _user32.SendInput(len(inputs), arr, ctypes.sizeof(_INPUT))
+    ctypes.set_last_error(0)
+    n = _user32.SendInput(len(inputs), arr, ctypes.sizeof(_INPUT))
+    return n
 
 
 def _unicode_pair(code: int) -> tuple[_INPUT, _INPUT]:
@@ -137,18 +151,29 @@ def _type_unicode_char(ch: str) -> None:
         _send_inputs(*_unicode_pair(cp))
 
 
-def _type_text(text: str) -> None:
+def _type_text(text: str) -> tuple[int, int]:
     """Type `text` char-by-char via synthetic Unicode keyboard events.
-    Works everywhere, including consoles where Ctrl+V is unbound."""
-    # Normalise line endings so \r\n doesn't double-submit in consoles.
+    Returns (events_requested, events_inserted) — if they differ, Windows
+    rejected some events (commonly UIPI: non-admin process → admin target)."""
     normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+    requested = 0
+    inserted = 0
     for ch in normalised:
         if ch == "\n":
-            # Use a real VK_RETURN so conhost submits the line, as the user
-            # would expect. Unicode 0x0A alone wouldn't trigger the submit.
-            _send_inputs(*_vk_pair(_VK_RETURN))
+            n = _send_inputs(*_vk_pair(_VK_RETURN))
+            requested += 2
+            inserted += n
         else:
-            _type_unicode_char(ch)
+            cp = ord(ch)
+            if cp > 0xFFFF:
+                cp -= 0x10000
+                inserted += _send_inputs(*_unicode_pair(0xD800 + (cp >> 10)))
+                inserted += _send_inputs(*_unicode_pair(0xDC00 + (cp & 0x3FF)))
+                requested += 4
+            else:
+                inserted += _send_inputs(*_unicode_pair(cp))
+                requested += 2
+    return requested, inserted
 
 
 def _paste_via_clipboard(text: str) -> None:
@@ -169,18 +194,56 @@ def _paste_via_clipboard(text: str) -> None:
 
 
 def inject_text(text: str):
+    """Inject `text` into the foreground window.
+
+    Raises ElevationRequired if the target window blocks us via UIPI
+    (non-admin FlowClone → admin cmd/PowerShell/Terminal). Callers should
+    catch that and surface a clear overlay message — the only real fix is
+    to relaunch FlowClone as administrator.
+    """
     if not text or not text.strip():
         return
 
-    try:
-        if _is_foreground_console():
-            _type_text(text)
-            return
-    except Exception:
-        # Detection or typing failed — fall through to the clipboard path.
-        pass
+    fg_class = _foreground_window_class()
+    is_console = fg_class in _CONSOLE_CLASSES
+    debug_log.log(
+        "inject.start",
+        chars=len(text),
+        fg_class=fg_class,
+        path="type" if is_console else "clipboard",
+        elevated=elevation.is_elevated(),
+    )
+
+    if is_console:
+        try:
+            requested, inserted = _type_text(text)
+            debug_log.log(
+                "inject.type_done",
+                requested=requested,
+                inserted=inserted,
+                last_err=ctypes.get_last_error(),
+            )
+            if inserted == 0 and requested > 0:
+                # Zero inserted = UIPI block (non-admin → admin window).
+                # Clipboard paste hits the same wall — Ctrl+V is also
+                # UIPI-gated — so we signal the caller instead of silently
+                # trying a fallback that will also fail.
+                if not elevation.is_elevated():
+                    raise ElevationRequired(
+                        "Target window is elevated — run FlowClone as admin"
+                    )
+                # We ARE elevated and still 0 inserted — genuinely unusual;
+                # fall through to clipboard as a last-ditch try.
+                debug_log.log("inject.zero_inserted_elevated_fallback")
+            else:
+                return
+        except ElevationRequired:
+            raise
+        except Exception as e:
+            debug_log.log("inject.type_exc", error=str(e))
 
     _paste_via_clipboard(text)
+    debug_log.log("inject.clipboard_done")
 
 
 def copy_selection() -> str:

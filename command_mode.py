@@ -7,7 +7,7 @@ from config import config
 from audio import record_until_silence, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import apply_command, AIError
-from injector import copy_selection, inject_text
+from injector import copy_selection, inject_text, ElevationRequired
 
 
 class CommandModeController:
@@ -93,6 +93,11 @@ class CommandModeController:
 
         try:
             inject_text(result)
+        except ElevationRequired:
+            overlay.show_error_signal.emit(
+                "Target window is elevated — right-click tray → Run as admin"
+            )
+            return
         except Exception as e:
             overlay.show_error_signal.emit(f"Inject failed: {e}")
             return

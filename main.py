@@ -16,7 +16,7 @@ from hotkeys import HotkeyManager
 from audio import Recorder, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import cleanup, AIError
-from injector import inject_text
+from injector import inject_text, ElevationRequired
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
 
@@ -161,6 +161,11 @@ class App(QObject):
 
         try:
             inject_text(cleaned)
+        except ElevationRequired:
+            self.overlay.show_error_signal.emit(
+                "Target window is elevated — right-click tray → Run as admin"
+            )
+            return
         except Exception as e:
             self.overlay.show_error_signal.emit(f"Inject failed: {e}")
             return

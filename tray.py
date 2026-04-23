@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw
 import pystray
 
 from config import config
+import elevation
 
 
 def _build_icon_image(size: int = 64) -> Image.Image:
@@ -80,10 +81,12 @@ class Tray:
         on_open_settings: Callable[[], None],
         on_toggle_ai_cleanup: Callable[[bool], None],
         on_quit: Callable[[], None],
+        on_relaunch_admin: Callable[[], None] | None = None,
     ):
         self._on_open_settings = on_open_settings
         self._on_toggle_ai_cleanup = on_toggle_ai_cleanup
         self._on_quit = on_quit
+        self._on_relaunch_admin = on_relaunch_admin or elevation.relaunch_as_admin
         self._icon: pystray.Icon | None = None
         self._thread: threading.Thread | None = None
 
@@ -105,14 +108,32 @@ class Tray:
             if self._icon is not None:
                 self._icon.stop()
 
-        return pystray.Menu(
-            pystray.MenuItem("FlowClone", None, enabled=False),
+        def run_as_admin(_icon, _item):
+            # Launch elevated, then exit this non-elevated instance so the
+            # user doesn't end up with two tray icons.
+            if self._on_relaunch_admin():
+                self._on_quit()
+                if self._icon is not None:
+                    self._icon.stop()
+
+        is_admin = elevation.is_elevated()
+        header = "FlowClone (admin)" if is_admin else "FlowClone"
+
+        items = [
+            pystray.MenuItem(header, None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings", open_settings, default=True),
             pystray.MenuItem("Toggle AI Cleanup", toggle_ai, checked=ai_enabled),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", quit_app),
-        )
+        ]
+        if not is_admin:
+            # Only show when non-admin — the option to re-elevate is only
+            # meaningful when we currently can't inject into elevated targets.
+            items.append(pystray.Menu.SEPARATOR)
+            items.append(pystray.MenuItem("Run as administrator", run_as_admin))
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem("Quit", quit_app))
+
+        return pystray.Menu(*items)
 
     def start(self):
         image = _build_icon_image()

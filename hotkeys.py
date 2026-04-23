@@ -1,10 +1,19 @@
-"""Global hotkey listener. Runs on a daemon thread managed by the `keyboard` lib.
+"""Global hotkey listener.
 
-Important Windows constraint: the WH_KEYBOARD_LL callback must return within
-~300 ms (LowLevelHooksTimeout default) or Windows silently disables the hook
-for the rest of the session. Starting a sounddevice stream can take 100–200 ms
-on USB/Bluetooth microphones, so we dispatch press/release handlers onto a
-worker thread and return immediately from the hook.
+PTT (press-and-hold) goes through `keyhook` — our raw WH_KEYBOARD_LL hook.
+The `keyboard` library has a stateful AltGr compensation filter that can
+silently swallow Right Alt events in certain foreground contexts (notably
+when a console window has focus); the raw hook has no such quirk.
+
+Combo hotkeys (Command Mode, Settings) go through `keyboard.add_hotkey`.
+They aren't press-and-hold, they don't touch the Right Alt path, and
+add_hotkey uses a stable dispatch mechanism that's been reliable in
+practice.
+
+Both mechanisms run on background threads; handlers dispatch onto worker
+threads so nothing heavy runs inside the LL-hook callback (Windows silently
+disables LL hooks whose callback exceeds LowLevelHooksTimeout, default
+300 ms, and sounddevice device enumeration can come close to that).
 """
 from __future__ import annotations
 
@@ -14,12 +23,13 @@ from typing import Callable, Optional
 import keyboard
 
 import debug_log
+import keyhook
 
 
 class HotkeyManager:
     """
     Push-to-talk hotkey: fires on_ptt_press when held, on_ptt_release when released.
-    Command mode hotkey: fires on_command_toggle on each press (toggle behaviour handled by caller).
+    Command mode hotkey: fires on_command_toggle on each press.
     Settings hotkey: fires on_settings on each press.
     """
 
@@ -39,73 +49,21 @@ class HotkeyManager:
         self._command_hotkey: Optional[str] = None
         self._settings_hotkey: Optional[str] = None
 
-        self._ptt_down = False
-        self._ptt_handler_ref = None  # for keyboard.hook
+        self._ptt_token: Optional[int] = None
         self._command_hotkey_id = None
         self._settings_hotkey_id = None
 
         self._lock = threading.Lock()
 
-    # --- Helpers --------------------------------------------------------
-
-    @staticmethod
-    def _normalise_ptt(hotkey: str) -> str:
-        return hotkey.lower().strip()
-
-    def _ptt_key_matches(self, event: keyboard.KeyboardEvent) -> bool:
-        if self._ptt_hotkey is None:
-            return False
-        target = self._ptt_hotkey
-        name = (event.name or "").lower()
-        if name == target:
-            return True
-        # alt aliases
-        if target == "right alt" and name in ("alt gr", "right alt"):
-            return True
-        if target == "left alt" and name == "alt":
-            # 'alt' is ambiguous; prefer scan code check when possible
-            return True
-        return False
-
-    def _on_ptt_event(self, event: keyboard.KeyboardEvent):
-        debug_log.log(
-            "hook.event",
-            type=event.event_type,
-            name=event.name,
-            scan=getattr(event, "scan_code", None),
-        )
-        if not self._ptt_key_matches(event):
-            return
-        if event.event_type == keyboard.KEY_DOWN:
-            if not self._ptt_down:
-                self._ptt_down = True
-                debug_log.log("hook.ptt_down", name=event.name)
-                # Dispatch off the hook thread. See module docstring — LL hook
-                # callbacks that exceed LowLevelHooksTimeout get silently
-                # disabled by Windows.
-                threading.Thread(
-                    target=self._safe(self._on_ptt_press),
-                    daemon=True, name="ptt-press",
-                ).start()
-        elif event.event_type == keyboard.KEY_UP:
-            if self._ptt_down:
-                self._ptt_down = False
-                debug_log.log("hook.ptt_up", name=event.name)
-                threading.Thread(
-                    target=self._safe(self._on_ptt_release),
-                    daemon=True, name="ptt-release",
-                ).start()
-
     # --- Registration ---------------------------------------------------
 
     def _clear(self):
-        # Remove prior bindings if any.
-        try:
-            if self._ptt_handler_ref is not None:
-                keyboard.unhook(self._ptt_handler_ref)
-        except Exception:
-            pass
-        self._ptt_handler_ref = None
+        if self._ptt_token is not None:
+            try:
+                keyhook.unregister(self._ptt_token)
+            except Exception:
+                pass
+            self._ptt_token = None
 
         for attr in ("_command_hotkey_id", "_settings_hotkey_id"):
             hid = getattr(self, attr)
@@ -120,23 +78,38 @@ class HotkeyManager:
         """(Re)register all hotkeys. Safe to call multiple times."""
         with self._lock:
             self._clear()
-            self._ptt_hotkey = self._normalise_ptt(ptt)
+            self._ptt_hotkey = (ptt or "").strip().lower()
             self._command_hotkey = command
             self._settings_hotkey = settings
-            self._ptt_down = False
 
-            self._ptt_handler_ref = keyboard.hook(self._on_ptt_event)
+            vk = keyhook.vk_for_name(self._ptt_hotkey)
+            if vk is None:
+                # Unknown single-key name (e.g. a combo typed into the field
+                # we don't support for PTT yet). Fall back silently; we won't
+                # register a press-and-hold.
+                debug_log.log("hotkeys.ptt_unmapped", name=self._ptt_hotkey)
+            else:
+                keyhook.start()
+                self._ptt_token = keyhook.register_key(
+                    vk,
+                    on_press=self._safe(self._on_ptt_press),
+                    on_release=self._safe(self._on_ptt_release),
+                )
+                debug_log.log(
+                    "hotkeys.ptt_registered",
+                    name=self._ptt_hotkey, vk=hex(vk), token=self._ptt_token,
+                )
 
             try:
                 self._command_hotkey_id = keyboard.add_hotkey(
-                    command, self._safe(self._on_command_toggle)
+                    command, self._safe(self._on_command_toggle),
                 )
             except Exception:
                 self._command_hotkey_id = None
 
             try:
                 self._settings_hotkey_id = keyboard.add_hotkey(
-                    settings, self._safe(self._on_settings)
+                    settings, self._safe(self._on_settings),
                 )
             except Exception:
                 self._settings_hotkey_id = None
@@ -153,10 +126,19 @@ class HotkeyManager:
     def shutdown(self):
         with self._lock:
             self._clear()
+        try:
+            keyhook.stop()
+        except Exception:
+            pass
 
     # --- Utility --------------------------------------------------------
 
     @staticmethod
     def capture_hotkey(timeout: float | None = None) -> str:
-        """Blocking: wait for the next hotkey combo and return its string representation."""
+        """Blocking: wait for the next hotkey combo and return its string representation.
+
+        Uses `keyboard.read_hotkey` — it's a one-off blocking call inside the
+        settings dialog, not sensitive to the cmd/terminal issue that affected
+        push-to-talk detection.
+        """
         return keyboard.read_hotkey(suppress=False)
