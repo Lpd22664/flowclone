@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import sys
 import threading
 import traceback
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
@@ -230,6 +232,15 @@ def _excepthook(exc_type, exc, tb):
 
 def main():
     sys.excepthook = _excepthook
+    if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+        xcb_runtime = Path(__file__).parent / ".venv" / "xcb-runtime" / "usr" / "lib" / "x86_64-linux-gnu"
+        cursor_lib = xcb_runtime / "libxcb-cursor.so.0"
+        if cursor_lib.exists():
+            try:
+                ctypes.CDLL(str(cursor_lib), mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                pass
+            os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     qt_app = QApplication(sys.argv)
     qt_app.setQuitOnLastWindowClosed(False)

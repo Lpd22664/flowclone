@@ -38,7 +38,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPen
+from PyQt6.QtGui import QColor, QCursor, QGuiApplication, QPainter, QPen
 from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -155,31 +155,31 @@ class Overlay(QWidget):
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
             | Qt.WindowType.NoDropShadowWindowHint
+            | Qt.WindowType.WindowTransparentForInput
+            | Qt.WindowType.X11BypassWindowManagerHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        self.setFixedSize(
-            OVERLAY_W + SHADOW_PADDING * 2,
-            OVERLAY_H + SHADOW_PADDING * 2,
-        )
+        self._window_w = OVERLAY_W + SHADOW_PADDING * 2
+        self._window_h = OVERLAY_H + SHADOW_PADDING * 2
+        self._pill_origin = QPoint(0, 0)
+        self.setFixedSize(self._window_w, self._window_h)
 
         # Layout — margins account for shadow padding + pill inner padding
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(
-            SHADOW_PADDING + 14, SHADOW_PADDING + 10,
-            SHADOW_PADDING + 16, SHADOW_PADDING + 10,
-        )
-        layout.setSpacing(10)
+        self._layout = QHBoxLayout(self)
+        self._set_layout_margins()
+        self._layout.setSpacing(10)
 
         self._dot = StatusDot(self)
-        layout.addWidget(self._dot, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._layout.addWidget(self._dot, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self._viz = BarVisualiser(self)
         self._viz.setMinimumWidth(140)
-        layout.addWidget(self._viz, stretch=1)
+        self._layout.addWidget(self._viz, stretch=1)
 
         self._label = QLabel("", self)
         self._label.setStyleSheet(
@@ -191,10 +191,12 @@ class Overlay(QWidget):
         self._label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._label.setMinimumWidth(64)
-        layout.addWidget(self._label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._layout.addWidget(self._label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # Fade via QGraphicsOpacityEffect (not setWindowOpacity — see module
-        # docstring). Single effect in the widget tree → no nesting conflict.
+        # docstring). On Wayland the overlay is a transparent full-screen
+        # surface; applying a widget-wide opacity effect can tint the whole
+        # screen, so the Wayland path shows/hides without fading.
         self._opacity = QGraphicsOpacityEffect(self)
         self._opacity.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity)
@@ -230,6 +232,8 @@ class Overlay(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
 
         sp = SHADOW_PADDING
+        ox = 0
+        oy = 0
 
         # Shadow: concentric rounded rects, faint → strong as we approach the pill.
         # Stepping by 2 gives smooth enough falloff for a 22px padding.
@@ -237,8 +241,8 @@ class Overlay(QWidget):
             alpha = max(2, int(62 - i * 2.6))
             painter.setBrush(QColor(0, 0, 0, alpha))
             shadow_rect = QRectF(
-                sp - i,
-                sp - i + SHADOW_Y_OFFSET,
+                ox + sp - i,
+                oy + sp - i + SHADOW_Y_OFFSET,
                 OVERLAY_W + 2 * i,
                 OVERLAY_H + 2 * i,
             )
@@ -249,7 +253,7 @@ class Overlay(QWidget):
             )
 
         # Pill fill
-        pill_rect = QRectF(sp, sp, OVERLAY_W, OVERLAY_H)
+        pill_rect = QRectF(ox + sp, oy + sp, OVERLAY_W, OVERLAY_H)
         painter.setBrush(BG_COLOR)
         painter.drawRoundedRect(pill_rect, CORNER_RADIUS, CORNER_RADIUS)
 
@@ -258,7 +262,7 @@ class Overlay(QWidget):
         pen = QPen(BORDER_COLOR)
         pen.setWidthF(1.0)
         painter.setPen(pen)
-        border_rect = QRectF(sp + 0.5, sp + 0.5, OVERLAY_W - 1, OVERLAY_H - 1)
+        border_rect = QRectF(ox + sp + 0.5, oy + sp + 0.5, OVERLAY_W - 1, OVERLAY_H - 1)
         painter.drawRoundedRect(
             border_rect,
             CORNER_RADIUS - 0.5,
@@ -267,8 +271,14 @@ class Overlay(QWidget):
 
     # --- Positioning ----------------------------------------------------
 
+    def _set_layout_margins(self):
+        self._layout.setContentsMargins(
+            SHADOW_PADDING + 14, SHADOW_PADDING + 10,
+            SHADOW_PADDING + 16, SHADOW_PADDING + 10,
+        )
+
     def _compute_position(self):
-        screen = QGuiApplication.primaryScreen()
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen is None:
             return
         geo = screen.availableGeometry()
@@ -322,8 +332,8 @@ class Overlay(QWidget):
         self._fade.setStartValue(self._opacity.opacity())
         self._fade.setEndValue(0.0)
 
-        # Small drift-down on exit
         start_pos = self.pos()
+        # Small drift-down on exit
         end_pos = QPoint(start_pos.x(), start_pos.y() + 8)
         self._slide.stop()
         self._slide.setDuration(260)

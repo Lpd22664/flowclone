@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 import time
 
-import keyboard
 import pyperclip
 
 import debug_log
@@ -49,7 +48,8 @@ def _paste_via_clipboard(text: str) -> None:
     original = _clipboard_get()
     _clipboard_set(text)
     time.sleep(0.05)
-    keyboard.send("ctrl+v")
+    paste_combo = "ctrl+shift+v" if sys.platform != "win32" else "ctrl+v"
+    _send_hotkey(paste_combo)
     time.sleep(0.12)
     try:
         _clipboard_set(original)
@@ -58,8 +58,12 @@ def _paste_via_clipboard(text: str) -> None:
 
 
 if sys.platform == "win32":
+    import keyboard
     import ctypes
     from ctypes import wintypes
+
+    def _send_hotkey(combo: str) -> None:
+        keyboard.send(combo)
 
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -219,13 +223,167 @@ if sys.platform == "win32":
 
 
 else:
+    import atexit
+    import fcntl
+    import os
+    import struct
+
+    _EV_SYN = 0x00
+    _EV_KEY = 0x01
+    _SYN_REPORT = 0
+    _KEY_LEFTCTRL = 29
+    _KEY_LEFTSHIFT = 42
+    _KEY_C = 46
+    _KEY_V = 47
+
+    def _ioc(direction: int, type_: int, nr: int, size: int) -> int:
+        return (direction << 30) | (size << 16) | (type_ << 8) | nr
+
+    def _io(type_: int, nr: int) -> int:
+        return (type_ << 8) | nr
+
+    def _iow(type_: int, nr: int, size: int) -> int:
+        return _ioc(1, type_, nr, size)
+
+    _UINPUT = ord("U")
+    _UI_DEV_CREATE = _io(_UINPUT, 1)
+    _UI_DEV_DESTROY = _io(_UINPUT, 2)
+    _UI_SET_EVBIT = _iow(_UINPUT, 100, struct.calcsize("i"))
+    _UI_SET_KEYBIT = _iow(_UINPUT, 101, struct.calcsize("i"))
+
+    class _UInputKeyboard:
+        def __init__(self):
+            self._fd: int | None = None
+
+        def _open(self) -> int:
+            if self._fd is not None:
+                return self._fd
+
+            fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                for ev in (_EV_KEY,):
+                    fcntl.ioctl(fd, _UI_SET_EVBIT, ev)
+                for key in (_KEY_LEFTCTRL, _KEY_LEFTSHIFT, _KEY_C, _KEY_V):
+                    fcntl.ioctl(fd, _UI_SET_KEYBIT, key)
+
+                # Legacy uinput_user_dev layout: name[80], input_id, ff count,
+                # then four ABS arrays. It is stable and avoids ctypes structs.
+                name = b"FlowClone virtual keyboard"
+                user_dev = struct.pack(
+                    "80sHHHHI" + "i" * 64 * 4,
+                    name,
+                    0x03,  # BUS_USB
+                    0xF10C,
+                    0x0001,
+                    0x0001,
+                    0,
+                    *([0] * 64 * 4),
+                )
+                os.write(fd, user_dev)
+                fcntl.ioctl(fd, _UI_DEV_CREATE)
+                time.sleep(0.15)
+            except Exception:
+                os.close(fd)
+                raise
+
+            self._fd = fd
+            return fd
+
+        def close(self):
+            if self._fd is None:
+                return
+            try:
+                fcntl.ioctl(self._fd, _UI_DEV_DESTROY)
+            except Exception:
+                pass
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+            self._fd = None
+
+        def _event(self, ev_type: int, code: int, value: int):
+            fd = self._open()
+            os.write(fd, struct.pack("llHHI", 0, 0, ev_type, code, value))
+
+        def _sync(self):
+            self._event(_EV_SYN, _SYN_REPORT, 0)
+
+        def hotkey(self, key: int, *, shift: bool = False):
+            self._event(_EV_KEY, _KEY_LEFTCTRL, 1)
+            if shift:
+                self._event(_EV_KEY, _KEY_LEFTSHIFT, 1)
+            self._event(_EV_KEY, key, 1)
+            self._sync()
+            self._event(_EV_KEY, key, 0)
+            if shift:
+                self._event(_EV_KEY, _KEY_LEFTSHIFT, 0)
+            self._event(_EV_KEY, _KEY_LEFTCTRL, 0)
+            self._sync()
+
+    _uinput_keyboard = _UInputKeyboard()
+    atexit.register(_uinput_keyboard.close)
+
+    def _send_hotkey(combo: str) -> None:
+        """Send a simple Ctrl+key chord on Linux.
+
+        Prefer uinput because native Wayland apps ignore XTest events. Fall
+        back to XTest for systems where /dev/uinput is unavailable.
+        """
+        key_for_combo = {
+            "ctrl+c": (_KEY_C, False),
+            "control+c": (_KEY_C, False),
+            "ctrl+v": (_KEY_V, False),
+            "control+v": (_KEY_V, False),
+            "ctrl+shift+v": (_KEY_V, True),
+            "control+shift+v": (_KEY_V, True),
+        }
+        normalised = "+".join(p.strip().lower() for p in combo.split("+") if p.strip())
+        key_spec = key_for_combo.get(normalised)
+        if key_spec is not None:
+            key_code, shift = key_spec
+            try:
+                _uinput_keyboard.hotkey(key_code, shift=shift)
+                return
+            except Exception as e:
+                debug_log.log("inject.uinput_failed", combo=combo, error=str(e))
+
+        try:
+            from Xlib import X, XK, display
+            from Xlib.ext import xtest
+        except Exception as e:
+            raise RuntimeError(f"Linux key injection unavailable: {e}") from e
+
+        parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
+        if len(parts) not in (2, 3) or parts[0] not in ("ctrl", "control"):
+            raise RuntimeError(f"Unsupported Linux hotkey: {combo}")
+
+        d = display.Display()
+        try:
+            ctrl = d.keysym_to_keycode(XK.XK_Control_L)
+            shift = d.keysym_to_keycode(XK.XK_Shift_L) if len(parts) == 3 else 0
+            key_name = parts[-1]
+            key = d.keysym_to_keycode(XK.string_to_keysym(key_name))
+            if not ctrl or not key:
+                raise RuntimeError(f"Could not resolve Linux hotkey: {combo}")
+
+            xtest.fake_input(d, X.KeyPress, ctrl)
+            if shift:
+                xtest.fake_input(d, X.KeyPress, shift)
+            xtest.fake_input(d, X.KeyPress, key)
+            xtest.fake_input(d, X.KeyRelease, key)
+            if shift:
+                xtest.fake_input(d, X.KeyRelease, shift)
+            xtest.fake_input(d, X.KeyRelease, ctrl)
+            d.sync()
+        finally:
+            d.close()
 
     def inject_text(text: str):
         """Paste text into the active Linux application.
 
-        This uses the desktop clipboard plus a synthetic Ctrl+V. On Wayland,
-        the compositor may reject synthetic input unless the `keyboard`
-        backend has permission to access evdev/uinput.
+        This uses the desktop clipboard plus an XTest synthetic Ctrl+V. XTest
+        works without root under FlowClone's XWayland/XCB runtime.
         """
         if not text or not text.strip():
             return
@@ -240,7 +398,7 @@ def copy_selection() -> str:
 
     _clipboard_set("")
     time.sleep(0.05)
-    keyboard.send("ctrl+c")
+    _send_hotkey("ctrl+c")
     time.sleep(0.15)
 
     selected = _clipboard_get()

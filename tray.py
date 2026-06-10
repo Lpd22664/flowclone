@@ -163,7 +163,15 @@ class Tray:
         self._qt_tray = QSystemTrayIcon(_build_qt_icon(), None)
         self._qt_tray.setToolTip("FlowClone")
         self._qt_tray.setContextMenu(self._qt_menu)
+        self._qt_tray.activated.connect(self._on_qt_tray_activated)
         self._qt_tray.show()
+
+    def _on_qt_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._on_open_settings()
 
     def _build_qt_menu(self) -> QMenu:
         menu = QMenu()
