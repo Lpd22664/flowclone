@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import sys
 import threading
 import traceback
 
@@ -22,10 +23,18 @@ from settings_window import SettingsDialog
 
 
 def _is_admin() -> bool:
+    if sys.platform != "win32":
+        return False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def _injection_blocked_message() -> str:
+    if sys.platform == "win32":
+        return "Target window is elevated — right-click tray → Run as admin"
+    return "Input injection blocked — check Linux hotkey/input permissions"
 
 
 class App(QObject):
@@ -71,6 +80,8 @@ class App(QObject):
 
         if not config.api_key:
             self.overlay.show_error_signal.emit("No API key — open Settings")
+        elif not self.hotkeys.any_registered():
+            self.overlay.show_error_signal.emit(self._hotkey_error_message())
 
     def _apply_hotkeys(self):
         self.hotkeys.apply(
@@ -78,6 +89,11 @@ class App(QObject):
             command=config.get("command_mode_hotkey", "ctrl+shift+space"),
             settings=config.get("settings_hotkey", "ctrl+shift+f"),
         )
+
+    def _hotkey_error_message(self) -> str:
+        if sys.platform == "win32":
+            return "Hotkeys failed to register"
+        return "Linux hotkeys need /dev/input permissions"
 
     def _quit(self):
         try:
@@ -162,9 +178,7 @@ class App(QObject):
         try:
             inject_text(cleaned)
         except ElevationRequired:
-            self.overlay.show_error_signal.emit(
-                "Target window is elevated — right-click tray → Run as admin"
-            )
+            self.overlay.show_error_signal.emit(_injection_blocked_message())
             return
         except Exception as e:
             self.overlay.show_error_signal.emit(f"Inject failed: {e}")
@@ -194,6 +208,8 @@ class App(QObject):
     def _on_settings_saved(self):
         self._apply_hotkeys()
         self.tray.refresh_menu()
+        if not self.hotkeys.any_registered():
+            self.overlay.show_error_signal.emit(self._hotkey_error_message())
 
     # --- Errors ---------------------------------------------------------
 

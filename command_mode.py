@@ -1,6 +1,7 @@
 """Command Mode: user selects text, presses hotkey, speaks a transform command."""
 from __future__ import annotations
 
+import sys
 import threading
 
 from config import config
@@ -8,6 +9,12 @@ from audio import record_until_silence, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import apply_command, AIError
 from injector import copy_selection, inject_text, ElevationRequired
+
+
+def _injection_blocked_message() -> str:
+    if sys.platform == "win32":
+        return "Target window is elevated — right-click tray → Run as admin"
+    return "Input injection blocked — check Linux hotkey/input permissions"
 
 
 class CommandModeController:
@@ -94,9 +101,7 @@ class CommandModeController:
         try:
             inject_text(result)
         except ElevationRequired:
-            overlay.show_error_signal.emit(
-                "Target window is elevated — right-click tray → Run as admin"
-            )
+            overlay.show_error_signal.emit(_injection_blocked_message())
             return
         except Exception as e:
             overlay.show_error_signal.emit(f"Inject failed: {e}")

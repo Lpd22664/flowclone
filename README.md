@@ -2,9 +2,9 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)
-![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2011-lightgrey.svg)
+![Platform: Windows/Linux](https://img.shields.io/badge/Platform-Windows%20%2F%20Linux-lightgrey.svg)
 
-An open-source Windows voice-dictation tool in the spirit of Wispr Flow. Hold a hotkey, speak, and cleaned-up text appears in whatever app you're typing into. Bring your own API key — **OpenAI** (paid) or **Groq** (free tier, no credit card).
+An open-source desktop voice-dictation tool in the spirit of Wispr Flow. Hold a hotkey, speak, and cleaned-up text appears in whatever app you're typing into. Bring your own API key — **OpenAI** (paid) or **Groq** (free tier, no credit card).
 
 ## What it does
 
@@ -35,6 +35,8 @@ User settings live in `%APPDATA%\FlowClone\` (your API keys in `.env`, preferenc
 
 ### Option B — Run from source
 
+Windows:
+
 ```bat
 git clone https://github.com/YOUR-USERNAME/flowclone
 cd flowclone
@@ -44,7 +46,39 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Linux:
+
+```bash
+git clone https://github.com/Lpd22664/flowclone
+cd flowclone
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+python main.py
+```
+
 Requires Python 3.11+. User settings live next to the source files (`.env`, `config.json`, `dictionary.txt` — all gitignored).
+
+On Ubuntu/Linux Mint, FlowClone can record through either PortAudio (`sounddevice`) or the system `arecord` command. If neither is available, install one of these:
+
+```bash
+sudo apt install portaudio19-dev
+# or
+sudo apt install alsa-utils
+```
+
+Linux global hotkeys try a rootless X11/XWayland backend first. If your desktop blocks global grabs, FlowClone falls back to the `keyboard` package, which requires root on Linux. Running GUI apps as root is not ideal, so the most reliable setup is an Xorg session. If you deliberately want the root-only backend, a local permissions setup is:
+
+```bash
+sudo usermod -aG input "$USER"
+printf 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"\n' | sudo tee /etc/udev/rules.d/99-flowclone-uinput.rules
+sudo modprobe uinput
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Log out and back in after changing groups. If your compositor still blocks injected keys under Wayland, use an Xorg session for FlowClone.
 
 ### Pick a provider
 
@@ -76,7 +110,7 @@ Both providers have their own data-retention policies — check them before usin
 
 **System-level access FlowClone needs**
 - **Microphone** — recorded *only while* push-to-talk is held, or while Command Mode is listening. No always-on recording.
-- **Global keyboard hook** — so hotkeys work even when FlowClone isn't focused. Uses the `keyboard` library's standard Windows low-level hook. The hook receives all key events but FlowClone only reacts to its configured hotkeys; other keystrokes are not stored, logged, or transmitted.
+- **Global keyboard hook** — so hotkeys work even when FlowClone isn't focused. Windows uses a low-level hook; Linux tries an X11/XWayland global-grab backend first and falls back to the `keyboard` package's evdev backend. The hook receives all key events but FlowClone only reacts to its configured hotkeys; other keystrokes are not stored, logged, or transmitted.
 - **Clipboard** — briefly written to (to insert text via Ctrl+V) and, in Command Mode, read from (via Ctrl+C to capture your selection). Original clipboard content is restored after each injection.
 
 **Files written on your machine**
@@ -90,6 +124,8 @@ When running the downloaded EXE, user data lives in `%APPDATA%\FlowClone\`:
 When running from source, the same files live next to `main.py` (all gitignored — they never reach the repo).
 
 ## Admin rights
+
+This section applies to Windows.
 
 Windows User Interface Privilege Isolation (UIPI) **blocks a non-admin process from typing into an admin-level window**. So if FlowClone is running normally and your cmd / PowerShell / Windows Terminal is elevated, push-to-talk will record and transcribe but the text will never arrive — the `SendInput` call is silently rejected.
 
@@ -158,6 +194,7 @@ PRs welcome. If you're planning something big, open an issue first so we can ali
 
 - **"No API key for …"** — paste your key in Settings; it's written to `.env`.
 - **"No microphone detected"** — Windows Settings → Privacy → Microphone → allow desktop apps.
+- **Linux hotkeys do nothing** — Wayland compositors may block global key grabs and synthetic input. Xorg is the most reliable Linux session for this app. The fallback `keyboard` backend requires root-level input access.
 - **Push-to-talk works but nothing pastes** — the active app may block simulated Ctrl+V. Try a different app to confirm. (Console windows — cmd.exe, PowerShell, Windows Terminal — are auto-detected and typed into directly, so Ctrl+V setting doesn't matter there.)
 - **Hotkeys don't fire in one specific app** — that app is probably running elevated. Relaunch FlowClone from an elevated terminal.
 - **Overlay appears but text never arrives** — check network; a transcription failure shows "Transcription failed" briefly, then the overlay fades.

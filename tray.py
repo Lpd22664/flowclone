@@ -1,11 +1,15 @@
 """System tray icon. Runs pystray on a daemon thread; emits Qt signals on click."""
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Callable
 
 from PIL import Image, ImageDraw
 import pystray
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
 from config import config
 import elevation
@@ -88,6 +92,8 @@ class Tray:
         self._on_quit = on_quit
         self._on_relaunch_admin = on_relaunch_admin or elevation.relaunch_as_admin
         self._icon: pystray.Icon | None = None
+        self._qt_tray: QSystemTrayIcon | None = None
+        self._qt_menu: QMenu | None = None
         self._thread: threading.Thread | None = None
 
     def _menu(self) -> pystray.Menu:
@@ -125,7 +131,7 @@ class Tray:
             pystray.MenuItem("Settings", open_settings, default=True),
             pystray.MenuItem("Toggle AI Cleanup", toggle_ai, checked=ai_enabled),
         ]
-        if not is_admin:
+        if sys.platform == "win32" and not is_admin:
             # Only show when non-admin — the option to re-elevate is only
             # meaningful when we currently can't inject into elevated targets.
             items.append(pystray.Menu.SEPARATOR)
@@ -136,6 +142,10 @@ class Tray:
         return pystray.Menu(*items)
 
     def start(self):
+        if sys.platform != "win32":
+            self._start_qt_tray()
+            return
+
         image = _build_icon_image()
         self._icon = pystray.Icon(
             "FlowClone",
@@ -146,6 +156,46 @@ class Tray:
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()
 
+    def _start_qt_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self._qt_menu = self._build_qt_menu()
+        self._qt_tray = QSystemTrayIcon(_build_qt_icon(), None)
+        self._qt_tray.setToolTip("FlowClone")
+        self._qt_tray.setContextMenu(self._qt_menu)
+        self._qt_tray.show()
+
+    def _build_qt_menu(self) -> QMenu:
+        menu = QMenu()
+        header = QAction("FlowClone", menu)
+        header.setEnabled(False)
+        menu.addAction(header)
+        menu.addSeparator()
+
+        settings = QAction("Settings", menu)
+        settings.triggered.connect(lambda: self._on_open_settings())
+        menu.addAction(settings)
+
+        ai = QAction("Toggle AI Cleanup", menu)
+        ai.setCheckable(True)
+        ai.setChecked(bool(config.get("ai_cleanup_enabled", True)))
+
+        def toggle_ai():
+            new = not bool(config.get("ai_cleanup_enabled", True))
+            config.set("ai_cleanup_enabled", new)
+            config.save()
+            ai.setChecked(new)
+            self._on_toggle_ai_cleanup(new)
+
+        ai.triggered.connect(toggle_ai)
+        menu.addAction(ai)
+        menu.addSeparator()
+
+        quit_action = QAction("Quit", menu)
+        quit_action.triggered.connect(lambda: self._on_quit())
+        menu.addAction(quit_action)
+        return menu
+
     def stop(self):
         if self._icon is not None:
             try:
@@ -153,11 +203,73 @@ class Tray:
             except Exception:
                 pass
         self._icon = None
+        if self._qt_tray is not None:
+            self._qt_tray.hide()
+        self._qt_tray = None
+        self._qt_menu = None
 
     def refresh_menu(self):
+        if self._qt_tray is not None:
+            self._qt_menu = self._build_qt_menu()
+            self._qt_tray.setContextMenu(self._qt_menu)
+            return
         if self._icon is not None:
             self._icon.menu = self._menu()
             try:
                 self._icon.update_menu()
             except Exception:
                 pass
+
+
+def _build_qt_icon(size: int = 64) -> QIcon:
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(240, 240, 244), max(2, int(size * 0.07)))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+
+    cx = size / 2
+    body_w = size * 0.36
+    body_top = size * 0.18
+    body_bot = size * 0.60
+    p.drawRoundedRect(
+        int(cx - body_w / 2),
+        int(body_top),
+        int(body_w),
+        int(body_bot - body_top),
+        int(body_w / 2),
+        int(body_w / 2),
+    )
+
+    stand_w = size * 0.56
+    stand_top = size * 0.42
+    stand_bot = size * 0.74
+    p.drawLine(
+        int(cx - stand_w / 2),
+        int(stand_top),
+        int(cx - stand_w / 2),
+        int(stand_bot - stand_w / 2 * 0.45),
+    )
+    p.drawLine(
+        int(cx + stand_w / 2),
+        int(stand_top),
+        int(cx + stand_w / 2),
+        int(stand_bot - stand_w / 2 * 0.45),
+    )
+    p.drawArc(
+        int(cx - stand_w / 2),
+        int(stand_bot - stand_w / 2),
+        int(stand_w),
+        int(stand_w),
+        0,
+        180 * 16,
+    )
+    stem_top = stand_bot + stand_w / 4
+    stem_bot = size * 0.88
+    p.drawLine(int(cx), int(stem_top), int(cx), int(stem_bot))
+    base_half = size * 0.13
+    p.drawLine(int(cx - base_half), int(stem_bot), int(cx + base_half), int(stem_bot))
+    p.end()
+    return QIcon(pix)

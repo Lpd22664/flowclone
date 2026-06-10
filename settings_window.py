@@ -1,6 +1,7 @@
 """Settings dialog. Dark, minimal, tuned to match the overlay language."""
 from __future__ import annotations
 
+import sys
 import threading
 
 import keyboard
@@ -266,15 +267,24 @@ class SettingsDialog(QDialog):
         self._fillers.setChecked(bool(config.get("remove_filler_words", True)))
         form.addRow("", self._fillers)
 
-        self._autostart = QCheckBox("Start FlowClone when Windows starts")
+        startup_label = (
+            "Start FlowClone when Windows starts"
+            if sys.platform == "win32"
+            else "Start FlowClone when Linux starts"
+        )
+        self._autostart = QCheckBox(startup_label)
         if autostart.is_supported():
             self._autostart.setChecked(autostart.is_enabled())
         else:
             self._autostart.setEnabled(False)
-            self._autostart.setToolTip(
-                "Only available in the installed FlowClone.exe build. "
-                "When running from source, add a shortcut to shell:startup instead."
-            )
+            if sys.platform == "win32":
+                tip = (
+                    "Only available in the installed FlowClone.exe build. "
+                    "When running from source, add a shortcut to shell:startup instead."
+                )
+            else:
+                tip = "Linux auto-start is not wired into the settings UI yet."
+            self._autostart.setToolTip(tip)
         form.addRow("", self._autostart)
 
         self._dictionary = QPlainTextEdit()
@@ -285,10 +295,15 @@ class SettingsDialog(QDialog):
 
         root.addLayout(form)
 
-        info = QLabel(
-            "Admin rights may be required for global hotkeys to reach elevated apps.",
-            self,
+        info_text = (
+            "Admin rights may be required for global hotkeys to reach elevated apps."
+            if sys.platform == "win32"
+            else (
+                "Linux global hotkeys use /dev/input; on Wayland they may need "
+                "input/uinput permissions from your desktop session."
+            )
         )
+        info = QLabel(info_text, self)
         info.setObjectName("footnote")
         info.setWordWrap(True)
         root.addWidget(info)
@@ -346,7 +361,7 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "FlowClone",
-                    f"Couldn't update Windows startup entry:\n{e}\n\n"
+                    f"Couldn't update startup entry:\n{e}\n\n"
                     "Other settings were saved.",
                 )
 
