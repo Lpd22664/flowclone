@@ -40,10 +40,39 @@ def _app_dir() -> Path:
     return Path(__file__).parent
 
 
+def _exe_dir() -> Path:
+    """Directory of the executable (frozen EXE) or of the source files."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _xdg_config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    return (Path(base) if base else Path.home() / ".config") / "flowclone"
+
+
+def _user_file(name: str) -> Path:
+    """Locate a user file such as config.json or dictionary.txt.
+
+    Next to the executable wins; on Linux the XDG config dir is tried next and
+    is also where a new file gets created if none exists yet.
+    """
+    candidates = [_exe_dir() / name]
+    if sys.platform.startswith("linux"):
+        candidates.append(_xdg_config_dir() / name)
+    for path in candidates:
+        if path.is_file():
+            return path
+    if sys.platform.startswith("linux"):
+        return candidates[-1]
+    return APP_DIR / name
+
+
 APP_DIR = _app_dir()
 ENV_PATH = APP_DIR / ".env"
-CONFIG_PATH = APP_DIR / "config.json"
-DICTIONARY_PATH = APP_DIR / "dictionary.txt"
+CONFIG_PATH = _user_file("config.json")
+DICTIONARY_PATH = _user_file("dictionary.txt")
 
 PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
@@ -125,8 +154,14 @@ class Config:
                         self._data[k] = v
             except (json.JSONDecodeError, OSError):
                 pass
+        else:
+            try:
+                self.save()
+            except OSError:
+                pass
 
     def save(self):
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=4)
 
@@ -257,6 +292,7 @@ class Config:
             return out
 
     def save_dictionary(self, text: str):
+        DICTIONARY_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(DICTIONARY_PATH, "w", encoding="utf-8") as f:
             f.write(text)
 

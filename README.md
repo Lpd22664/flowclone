@@ -158,6 +158,8 @@ When running the downloaded EXE, user data lives in `%APPDATA%\FlowClone\`:
 
 When running from source, the same files live next to `main.py` (all gitignored — they never reach the repo, apart from the default `config.json`).
 
+`config.json` and `dictionary.txt` are read from next to the executable (or `main.py`) first. On Linux, if they aren't there, `$XDG_CONFIG_HOME/flowclone/` (default `~/.config/flowclone/`) is used, and that's where new ones are created.
+
 ## Admin rights (Windows)
 
 Linux has no equivalent restriction — access to `/dev/input` and `/dev/uinput` (see *Option C*) is all FlowClone needs there.
