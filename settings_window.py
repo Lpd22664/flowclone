@@ -353,6 +353,11 @@ class SettingsDialog(QDialog):
         self._cmd.captured.connect(lambda _: self._cmd._btn.setEnabled(True))
         form.addRow("Command Mode hotkey", self._cmd)
 
+        self._settings_hk = HotkeyCapture(config.get("settings_hotkey", "ctrl+shift+f"))
+        self._settings_hk.captured.connect(self._settings_hk.set_value)
+        self._settings_hk.captured.connect(lambda _: self._settings_hk._btn.setEnabled(True))
+        form.addRow("Settings hotkey", self._settings_hk)
+
         self._ai = QCheckBox("Enable AI cleanup")
         self._ai.setChecked(bool(config.get("ai_cleanup_enabled", True)))
         form.addRow("", self._ai)
@@ -575,6 +580,7 @@ class SettingsDialog(QDialog):
         whisper_model = self._whisper_model.currentData() or "base"
         ptt = self._ptt.value() or "right alt"
         cmd = self._cmd.value() or "ctrl+shift+space"
+        settings_hk = self._settings_hk.value() or "ctrl+shift+f"
         ai_enabled = self._ai.isChecked()
         remove_fillers = self._fillers.isChecked()
         dict_text = self._dictionary.toPlainText()
@@ -593,6 +599,7 @@ class SettingsDialog(QDialog):
             config.set("whisper_model", whisper_model)
             config.set("push_to_talk_hotkey", ptt)
             config.set("command_mode_hotkey", cmd)
+            config.set("settings_hotkey", settings_hk)
             config.set("ai_cleanup_enabled", ai_enabled)
             config.set("remove_filler_words", remove_fillers)
             config.save()

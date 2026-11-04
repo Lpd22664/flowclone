@@ -13,7 +13,7 @@ An open-source voice-dictation tool for Windows and Linux in the spirit of Wispr
 - **Glass overlay** — bottom-centre floating pill with a live audio visualiser, doesn't steal focus. Shows *Listening → Transcribing → AI processing → Done*.
 - **Mix and match providers** — pick the transcription provider (OpenAI, Groq, local whisper.cpp) and the AI processing provider (OpenAI, Groq, local LLM) independently.
 - **Fully offline mode** — transcribe with whisper.cpp and clean up with a local LLM; no API keys, no internet. Download whisper.cpp models from Settings and FlowClone runs and supervises a local `whisper-server` for you.
-- **Settings** — `Ctrl+Shift+F` (or right-click the tray icon). Includes microphone selection.
+- **Settings** — `Ctrl+Shift+F` (or right-click the tray icon). Includes microphone selection; all three hotkeys are configurable.
 
 ## Why FlowClone?
 
