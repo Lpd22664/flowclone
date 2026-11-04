@@ -36,9 +36,6 @@ class CommandModeController:
                 if self._stop_event is not None:
                     self._stop_event.set()
                 return
-            if config.is_local:
-                self._overlay.show_error_signal.emit("Command Mode needs OpenAI or Groq")
-                return
             self._stop_event = threading.Event()
             self._thread = threading.Thread(
                 target=self._run, args=(self._stop_event,), daemon=True
@@ -57,7 +54,7 @@ class CommandModeController:
             selected = ""
 
         overlay.show_command_signal.emit()
-        if config.missing_api_key:
+        if config.missing_transcription_key or config.missing_ai_key:
             overlay.notice_signal.emit("No API key")
 
         silence_s = float(config.get("command_mode_silence_seconds", 1.5))
@@ -82,11 +79,11 @@ class CommandModeController:
             overlay.hide_signal.emit()
             return
 
-        if config.missing_api_key:
+        if config.missing_transcription_key or config.missing_ai_key:
             overlay.show_error_signal.emit("No API key — open Settings")
             return
 
-        overlay.show_processing_signal.emit()
+        overlay.show_processing_signal.emit("Transcribing")
 
         try:
             command_text = transcribe(wav_bytes)
@@ -98,6 +95,7 @@ class CommandModeController:
             overlay.hide_signal.emit()
             return
 
+        overlay.show_processing_signal.emit("AI processing")
         try:
             result = apply_command(selected, command_text)
         except AIError as e:

@@ -27,7 +27,15 @@ from PyQt6.QtWidgets import (
 import autostart
 import whispercpp
 from audio import list_input_devices
-from config import config, PROVIDER_GROQ, PROVIDER_LOCAL, PROVIDER_OPENAI, PROVIDER_SPEC
+from config import (
+    config,
+    AI_PROVIDERS,
+    PROVIDER_GROQ,
+    PROVIDER_LOCAL_LLM,
+    PROVIDER_OPENAI,
+    PROVIDER_SPEC,
+    TRANSCRIPTION_PROVIDERS,
+)
 from hotkeys import HotkeyManager
 
 
@@ -268,22 +276,31 @@ class SettingsDialog(QDialog):
         form.setVerticalSpacing(12)
 
         self._provider = QComboBox()
-        for pid in (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL):
+        for pid in TRANSCRIPTION_PROVIDERS:
             self._provider.addItem(PROVIDER_SPEC[pid]["display"], pid)
-        current_provider = config.provider
-        idx = max(
-            0,
-            next(
-                (
-                    i
-                    for i in range(self._provider.count())
-                    if self._provider.itemData(i) == current_provider
-                ),
-                0,
-            ),
+        self._provider.setCurrentIndex(max(0, self._provider.findData(config.provider)))
+        self._provider.currentIndexChanged.connect(self._update_provider_rows)
+        form.addRow("Transcription provider", self._provider)
+
+        self._ai_provider = QComboBox()
+        for pid in AI_PROVIDERS:
+            self._ai_provider.addItem(PROVIDER_SPEC[pid]["display"], pid)
+        self._ai_provider.setCurrentIndex(
+            max(0, self._ai_provider.findData(config.ai_provider))
         )
-        self._provider.setCurrentIndex(idx)
-        form.addRow("Provider", self._provider)
+        self._ai_provider.currentIndexChanged.connect(self._update_provider_rows)
+        form.addRow("AI processing provider", self._ai_provider)
+
+        self._local_llm_url = QLineEdit(config.get("local_llm_url", ""))
+        self._local_llm_url.setPlaceholderText("http://localhost:11434/v1")
+        self._local_llm_url.setToolTip(
+            "OpenAI-compatible endpoint, e.g. Ollama, llama.cpp server or LM Studio"
+        )
+        form.addRow("Local LLM URL", self._local_llm_url)
+
+        self._local_llm_model = QLineEdit(config.get("local_llm_model", ""))
+        self._local_llm_model.setPlaceholderText("llama3.2")
+        form.addRow("Local LLM model", self._local_llm_model)
 
         self._openai_key = QLineEdit(config.api_key_for(PROVIDER_OPENAI))
         self._openai_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -294,6 +311,8 @@ class SettingsDialog(QDialog):
         self._groq_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._groq_key.setPlaceholderText("gsk_…  (free from console.groq.com)")
         form.addRow("Groq API key", self._groq_key)
+        self._form = form
+        self._update_provider_rows()
 
         self._language = QComboBox()
         for code, label in LANGUAGES:
@@ -334,7 +353,7 @@ class SettingsDialog(QDialog):
         self._cmd.captured.connect(lambda _: self._cmd._btn.setEnabled(True))
         form.addRow("Command Mode hotkey", self._cmd)
 
-        self._ai = QCheckBox("Enable AI cleanup (GPT-4o-mini)")
+        self._ai = QCheckBox("Enable AI cleanup")
         self._ai.setChecked(bool(config.get("ai_cleanup_enabled", True)))
         form.addRow("", self._ai)
 
@@ -437,6 +456,18 @@ class SettingsDialog(QDialog):
         buttons.addWidget(save_btn)
         root.addLayout(buttons)
 
+    # --- Provider-specific rows ------------------------------------------
+
+    def _update_provider_rows(self):
+        selected = {self._provider.currentData(), self._ai_provider.currentData()}
+        local_llm = PROVIDER_LOCAL_LLM in selected
+        self._form.setRowVisible(self._local_llm_url, local_llm)
+        self._form.setRowVisible(self._local_llm_model, local_llm)
+        self._form.setRowVisible(self._openai_key, PROVIDER_OPENAI in selected)
+        self._form.setRowVisible(self._groq_key, PROVIDER_GROQ in selected)
+        if self.isVisible():
+            self.adjustSize()  # shrink when rows get hidden
+
     # --- whisper.cpp models ----------------------------------------------
 
     def _refresh_model_item(self, idx: int):
@@ -534,6 +565,9 @@ class SettingsDialog(QDialog):
 
     def _on_save(self):
         provider = self._provider.currentData() or PROVIDER_OPENAI
+        ai_provider = self._ai_provider.currentData() or PROVIDER_OPENAI
+        local_llm_url = self._local_llm_url.text().strip()
+        local_llm_model = self._local_llm_model.text().strip()
         openai_key = self._openai_key.text().strip()
         groq_key = self._groq_key.text().strip()
         language = self._language.currentData() or "en"
@@ -551,6 +585,9 @@ class SettingsDialog(QDialog):
             if groq_key:
                 config.set_api_key_for(PROVIDER_GROQ, groq_key)
             config.set("provider", provider)
+            config.set("ai_provider", ai_provider)
+            config.set("local_llm_url", local_llm_url)
+            config.set("local_llm_model", local_llm_model)
             config.set("language", language)
             config.set("input_device", input_device)
             config.set("whisper_model", whisper_model)

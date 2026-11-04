@@ -127,7 +127,7 @@ STATE_META = {
         "dot": "#9a9aa2",
         "bar": "#c7c7d1",
         "mode": MODE_PROCESS,
-        "label": "Thinking",
+        "label": "Transcribing",
     },
     STATE_DONE: {
         "dot": "#30d158",
@@ -178,7 +178,7 @@ class StatusDot(QWidget):
 
 class Overlay(QWidget):
     show_recording_signal = pyqtSignal()
-    show_processing_signal = pyqtSignal()
+    show_processing_signal = pyqtSignal(str)  # stage label, e.g. "Transcribing"
     show_done_signal = pyqtSignal()
     show_command_signal = pyqtSignal()
     show_error_signal = pyqtSignal(str)
@@ -414,9 +414,9 @@ class Overlay(QWidget):
     def _on_recording(self):
         self._apply_state(STATE_RECORDING)
 
-    @pyqtSlot()
-    def _on_processing(self):
-        self._apply_state(STATE_PROCESSING)
+    @pyqtSlot(str)
+    def _on_processing(self, label: str):
+        self._apply_state(STATE_PROCESSING, label_override=label or None)
 
     @pyqtSlot()
     def _on_done(self):

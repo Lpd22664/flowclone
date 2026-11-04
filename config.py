@@ -48,6 +48,10 @@ DICTIONARY_PATH = APP_DIR / "dictionary.txt"
 PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
 PROVIDER_LOCAL = "local"
+PROVIDER_LOCAL_LLM = "local_llm"
+
+TRANSCRIPTION_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL)
+AI_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL_LLM)
 
 DEFAULTS = {
     "provider": PROVIDER_OPENAI,
@@ -62,6 +66,10 @@ DEFAULTS = {
     "command_mode_silence_threshold": 0.01,
     "input_device": "",  # label from audio.list_input_devices(); "" = system default
     "whisper_model": "base",  # whisper.cpp model name, see whispercpp.MODELS
+    "ai_provider": "",  # "" = same as "provider" (older configs) if it has an LLM
+    # Any OpenAI-compatible chat endpoint (Ollama, llama.cpp server, LM Studio…)
+    "local_llm_url": "http://localhost:11434/v1",
+    "local_llm_model": "llama3.2",
 }
 
 # Per-provider model + endpoint config.
@@ -81,13 +89,22 @@ PROVIDER_SPEC = {
         "display": "Groq (free)",
     },
     # Offline transcription via bin/whisper-server; model comes from the
-    # "whisper_model" setting. No LLM, so AI cleanup and Command Mode are off.
+    # "whisper_model" setting. Transcription only.
     PROVIDER_LOCAL: {
         "env_key": None,
         "base_url": None,
         "whisper_model": None,
         "chat_model": None,
         "display": "Local whisper.cpp",
+    },
+    # AI processing only; endpoint and model come from "local_llm_url" and
+    # "local_llm_model".
+    PROVIDER_LOCAL_LLM: {
+        "env_key": None,
+        "base_url": None,
+        "whisper_model": None,
+        "chat_model": None,
+        "display": "Local LLM",
     },
 }
 
@@ -126,8 +143,15 @@ class Config:
 
     @property
     def provider(self) -> str:
+        """Transcription provider."""
         p = self._data.get("provider", PROVIDER_OPENAI)
-        return p if p in PROVIDER_SPEC else PROVIDER_OPENAI
+        return p if p in TRANSCRIPTION_PROVIDERS else PROVIDER_OPENAI
+
+    @property
+    def ai_provider(self) -> str:
+        """AI processing provider (cleanup + Command Mode)."""
+        p = self._data.get("ai_provider") or self._data.get("provider")
+        return p if p in AI_PROVIDERS else PROVIDER_OPENAI
 
     def _spec(self) -> dict:
         return PROVIDER_SPEC[self.provider]
@@ -142,9 +166,21 @@ class Config:
         return self.provider == PROVIDER_LOCAL
 
     @property
-    def missing_api_key(self) -> bool:
-        """True if the selected provider needs an API key and none is set."""
+    def missing_transcription_key(self) -> bool:
+        """True if the transcription provider needs an API key and none is set."""
         return bool(self._spec()["env_key"]) and not self.provider_api_key
+
+    @property
+    def missing_ai_key(self) -> bool:
+        """True if the AI processing provider needs an API key and none is set."""
+        return bool(PROVIDER_SPEC[self.ai_provider]["env_key"]) and not self.ai_api_key
+
+    @property
+    def missing_api_key(self) -> bool:
+        """True if dictation (transcription + optional cleanup) lacks a key."""
+        return self.missing_transcription_key or (
+            bool(self.get("ai_cleanup_enabled", True)) and self.missing_ai_key
+        )
 
     @property
     def provider_base_url(self) -> str | None:
@@ -156,7 +192,23 @@ class Config:
 
     @property
     def chat_model(self) -> str:
-        return self._spec()["chat_model"]
+        if self.ai_provider == PROVIDER_LOCAL_LLM:
+            return str(self.get("local_llm_model", "")).strip()
+        return PROVIDER_SPEC[self.ai_provider]["chat_model"]
+
+    @property
+    def ai_api_key(self) -> str:
+        return self.api_key_for(self.ai_provider)
+
+    @property
+    def ai_base_url(self) -> str | None:
+        if self.ai_provider == PROVIDER_LOCAL_LLM:
+            return str(self.get("local_llm_url", "")).strip() or None
+        return PROVIDER_SPEC[self.ai_provider]["base_url"]
+
+    @property
+    def ai_display_name(self) -> str:
+        return PROVIDER_SPEC[self.ai_provider]["display"]
 
     @property
     def provider_display_name(self) -> str:

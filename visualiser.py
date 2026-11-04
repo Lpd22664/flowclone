@@ -119,7 +119,7 @@ class BarVisualiser(QWidget):
         self.update()
 
     def _update_process_targets(self):
-        """Smooth sweeping wave pattern — looks like 'thinking'."""
+        """Smooth sweeping wave pattern shown while transcribing / AI processing."""
         t = time.monotonic() - self._start
         for i in range(BAR_COUNT):
             phase = (i / BAR_COUNT) * math.pi * 2 - t * 4.5

@@ -170,7 +170,7 @@ class App(QObject):
             self.overlay.show_error_signal.emit("No API key — open Settings")
             return
 
-        self.overlay.show_processing_signal.emit()
+        self.overlay.show_processing_signal.emit("Transcribing")
         worker = threading.Thread(
             target=self._process_recording, args=(wav_bytes,), daemon=True
         )
@@ -190,6 +190,8 @@ class App(QObject):
             self.overlay.hide_signal.emit()
             return
 
+        if config.get("ai_cleanup_enabled", True):
+            self.overlay.show_processing_signal.emit("AI processing")
         try:
             cleaned = cleanup(raw)
         except AIError as e:
