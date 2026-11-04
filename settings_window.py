@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,14 +18,16 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 import autostart
+import whispercpp
 from audio import list_input_devices
-from config import config, PROVIDER_GROQ, PROVIDER_OPENAI, PROVIDER_SPEC
+from config import config, PROVIDER_GROQ, PROVIDER_LOCAL, PROVIDER_OPENAI, PROVIDER_SPEC
 from hotkeys import HotkeyManager
 
 
@@ -65,6 +68,24 @@ QLabel#subheading {
 QLabel#footnote {
     color: #6b6b73;
     font-size: 11px;
+}
+QLabel#section {
+    font-size: 14px;
+    font-weight: 600;
+    padding-top: 6px;
+}
+QProgressBar {
+    background-color: #17181b;
+    color: #e6e6ea;
+    border: 1px solid #2a2b30;
+    border-radius: 6px;
+    min-height: 18px;
+    text-align: center;
+    font-size: 11px;
+}
+QProgressBar::chunk {
+    background-color: #0a84ff;
+    border-radius: 5px;
 }
 QLineEdit, QPlainTextEdit, QComboBox {
     background-color: #17181b;
@@ -140,6 +161,28 @@ QFrame#divider {
 """
 
 
+def _check_icon() -> QIcon:
+    """Green check mark marking downloaded whisper.cpp models."""
+    pm = QPixmap(16, 16)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor("#30d158"), 2.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.drawPolyline([QPointF(3, 8.5), QPointF(6.5, 12), QPointF(13, 4.5)])
+    p.end()
+    return QIcon(pm)
+
+
+def _blank_icon() -> QIcon:
+    """Same size as the check icon so model names stay aligned."""
+    pm = QPixmap(16, 16)
+    pm.fill(Qt.GlobalColor.transparent)
+    return QIcon(pm)
+
+
 class HotkeyCapture(QWidget):
     """Click-to-capture hotkey input."""
 
@@ -182,6 +225,10 @@ class HotkeyCapture(QWidget):
 
 class SettingsDialog(QDialog):
     saved = pyqtSignal()
+    # (bytes_done, bytes_total) and (model name, error message or "") from
+    # the download thread. `object` because sizes can exceed a C++ int.
+    _download_progress = pyqtSignal(object, object)
+    _download_finished = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -221,7 +268,7 @@ class SettingsDialog(QDialog):
         form.setVerticalSpacing(12)
 
         self._provider = QComboBox()
-        for pid in (PROVIDER_OPENAI, PROVIDER_GROQ):
+        for pid in (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL):
             self._provider.addItem(PROVIDER_SPEC[pid]["display"], pid)
         current_provider = config.provider
         idx = max(
@@ -320,6 +367,49 @@ class SettingsDialog(QDialog):
         self._dictionary.setMinimumHeight(110)
         form.addRow("Custom dictionary", self._dictionary)
 
+        local_divider = QFrame(self)
+        local_divider.setObjectName("divider")
+        form.addRow(local_divider)
+        local_heading = QLabel("Local transcription (whisper.cpp)", self)
+        local_heading.setObjectName("section")
+        form.addRow(local_heading)
+
+        self._whisper_model = QComboBox()
+        self._icon_downloaded = _check_icon()
+        self._icon_missing = _blank_icon()
+        for name in whispercpp.MODELS:
+            self._whisper_model.addItem(name, name)
+            self._refresh_model_item(self._whisper_model.count() - 1)
+        idx = self._whisper_model.findData(config.get("whisper_model", "base"))
+        self._whisper_model.setCurrentIndex(max(0, idx))
+        self._whisper_model.currentIndexChanged.connect(self._on_model_changed)
+        form.addRow("Model", self._whisper_model)
+
+        download_box = QWidget(self)
+        download_layout = QVBoxLayout(download_box)
+        download_layout.setContentsMargins(0, 0, 0, 0)
+        download_layout.setSpacing(6)
+        self._download_btn = QPushButton("Download", download_box)
+        self._download_btn.clicked.connect(self._on_download_clicked)
+        download_layout.addWidget(
+            self._download_btn, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        self._download_bar = QProgressBar(download_box)
+        self._download_bar.setRange(0, 1000)
+        download_layout.addWidget(self._download_bar)
+        self._download_status = QLabel("", download_box)
+        self._download_status.setObjectName("footnote")
+        self._download_status.setWordWrap(True)
+        download_layout.addWidget(self._download_status)
+        form.addRow("", download_box)
+
+        self._download_thread: threading.Thread | None = None
+        self._download_cancel = threading.Event()
+        self._downloading: str | None = None
+        self._download_progress.connect(self._on_download_progress)
+        self._download_finished.connect(self._on_download_finished)
+        self._update_download_ui()
+
         root.addLayout(form)
 
         if sys.platform == "win32":
@@ -347,12 +437,108 @@ class SettingsDialog(QDialog):
         buttons.addWidget(save_btn)
         root.addLayout(buttons)
 
+    # --- whisper.cpp models ----------------------------------------------
+
+    def _refresh_model_item(self, idx: int):
+        name = self._whisper_model.itemData(idx)
+        info = whispercpp.MODELS[name]
+        parts = [
+            name,
+            whispercpp.format_size(info.size),
+            "English" if info.english_only else "Multilingual",
+        ]
+        if info.diarization:
+            parts.append("speaker turns")
+        downloaded = whispercpp.is_downloaded(name)
+        self._whisper_model.setItemText(idx, "  ·  ".join(parts))
+        self._whisper_model.setItemIcon(
+            idx, self._icon_downloaded if downloaded else self._icon_missing
+        )
+        self._whisper_model.setItemData(
+            idx,
+            "Downloaded" if downloaded else "Not downloaded",
+            Qt.ItemDataRole.ToolTipRole,
+        )
+
+    def _update_download_ui(self):
+        name = self._whisper_model.currentData()
+        downloading = self._downloading is not None
+        self._download_btn.setVisible(downloading or not whispercpp.is_downloaded(name))
+        if downloading:
+            self._download_btn.setText(f"Cancel download of {self._downloading}")
+        else:
+            size = whispercpp.format_size(whispercpp.MODELS[name].size)
+            self._download_btn.setText(f"Download {name} ({size})")
+        self._download_bar.setVisible(downloading)
+        self._download_status.setVisible(bool(self._download_status.text()))
+
+    def _on_model_changed(self):
+        if self._downloading is None:
+            self._download_status.setText("")
+        self._update_download_ui()
+
+    def _on_download_clicked(self):
+        if self._downloading is not None:
+            self._download_cancel.set()
+            self._download_btn.setEnabled(False)
+            return
+        name = self._whisper_model.currentData()
+        self._downloading = name
+        self._download_cancel = threading.Event()
+        self._download_bar.setValue(0)
+        self._download_bar.setFormat("Connecting…")
+        self._download_status.setText("")
+        self._download_status.setVisible(False)
+        self._update_download_ui()
+        self._download_thread = threading.Thread(
+            target=self._download_worker,
+            args=(name, self._download_cancel),
+            daemon=True,
+        )
+        self._download_thread.start()
+
+    def _download_worker(self, name: str, cancel: threading.Event):
+        try:
+            whispercpp.download_model(
+                name, progress=self._download_progress.emit, cancel=cancel
+            )
+            error = ""
+        except whispercpp.DownloadCancelled:
+            error = "Download cancelled."
+        except Exception as e:
+            error = str(e) or type(e).__name__
+        self._download_finished.emit(name, error)
+
+    def _on_download_progress(self, done: int, total: int):
+        self._download_bar.setValue(int(done * 1000 / total) if total else 0)
+        self._download_bar.setFormat(
+            f"{whispercpp.format_size(done)} / {whispercpp.format_size(total)}"
+            f"  ({done * 100 // max(total, 1)}%)"
+        )
+
+    def _on_download_finished(self, name: str, error: str):
+        self._downloading = None
+        self._download_btn.setEnabled(True)
+        idx = self._whisper_model.findData(name)
+        if idx >= 0:
+            self._refresh_model_item(idx)
+        self._download_status.setText(error or f"Downloaded {name}.")
+        self._download_status.setVisible(True)
+        self._update_download_ui()
+
+    def done(self, result: int):
+        # Closing the dialog aborts a running download; the partial file is
+        # kept and resumed on the next attempt.
+        self._download_cancel.set()
+        super().done(result)
+
     def _on_save(self):
         provider = self._provider.currentData() or PROVIDER_OPENAI
         openai_key = self._openai_key.text().strip()
         groq_key = self._groq_key.text().strip()
         language = self._language.currentData() or "en"
         input_device = self._mic.currentData() or ""
+        whisper_model = self._whisper_model.currentData() or "base"
         ptt = self._ptt.value() or "right alt"
         cmd = self._cmd.value() or "ctrl+shift+space"
         ai_enabled = self._ai.isChecked()
@@ -367,6 +553,7 @@ class SettingsDialog(QDialog):
             config.set("provider", provider)
             config.set("language", language)
             config.set("input_device", input_device)
+            config.set("whisper_model", whisper_model)
             config.set("push_to_talk_hotkey", ptt)
             config.set("command_mode_hotkey", cmd)
             config.set("ai_cleanup_enabled", ai_enabled)

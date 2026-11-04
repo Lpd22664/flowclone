@@ -100,7 +100,7 @@ def _chat(messages: list[dict], max_tokens: int = 1000) -> str:
 def cleanup(transcript: str) -> str:
     if not transcript.strip():
         return ""
-    if not config.get("ai_cleanup_enabled", True):
+    if not config.get("ai_cleanup_enabled", True) or config.is_local:
         return transcript.strip()
 
     system_prompt = (
@@ -121,6 +121,8 @@ def cleanup(transcript: str) -> str:
 def apply_command(selected_text: str, voice_command: str) -> str:
     if not voice_command.strip():
         return selected_text
+    if config.is_local:
+        raise AIError("Command Mode needs OpenAI or Groq")
     user_content = f"TEXT:\n{selected_text}\n\nCOMMAND:\n{voice_command}"
     return _chat(
         [

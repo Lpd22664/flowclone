@@ -47,6 +47,7 @@ DICTIONARY_PATH = APP_DIR / "dictionary.txt"
 
 PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
+PROVIDER_LOCAL = "local"
 
 DEFAULTS = {
     "provider": PROVIDER_OPENAI,
@@ -60,6 +61,7 @@ DEFAULTS = {
     "command_mode_silence_seconds": 1.5,
     "command_mode_silence_threshold": 0.01,
     "input_device": "",  # label from audio.list_input_devices(); "" = system default
+    "whisper_model": "base",  # whisper.cpp model name, see whispercpp.MODELS
 }
 
 # Per-provider model + endpoint config.
@@ -77,6 +79,15 @@ PROVIDER_SPEC = {
         "whisper_model": "whisper-large-v3-turbo",
         "chat_model": "llama-3.3-70b-versatile",
         "display": "Groq (free)",
+    },
+    # Offline transcription via bin/whisper-server; model comes from the
+    # "whisper_model" setting. No LLM, so AI cleanup and Command Mode are off.
+    PROVIDER_LOCAL: {
+        "env_key": None,
+        "base_url": None,
+        "whisper_model": None,
+        "chat_model": None,
+        "display": "Local whisper.cpp",
     },
 }
 
@@ -124,7 +135,16 @@ class Config:
     @property
     def provider_api_key(self) -> str:
         """API key for the *currently selected* provider."""
-        return os.environ.get(self._spec()["env_key"], "").strip()
+        return self.api_key_for(self.provider)
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider == PROVIDER_LOCAL
+
+    @property
+    def missing_api_key(self) -> bool:
+        """True if the selected provider needs an API key and none is set."""
+        return bool(self._spec()["env_key"]) and not self.provider_api_key
 
     @property
     def provider_base_url(self) -> str | None:
@@ -145,14 +165,14 @@ class Config:
     def api_key_for(self, provider: str) -> str:
         """Read the stored key for a specific provider (regardless of which is active)."""
         spec = PROVIDER_SPEC.get(provider)
-        if spec is None:
+        if spec is None or not spec["env_key"]:
             return ""
         return os.environ.get(spec["env_key"], "").strip()
 
     def set_api_key_for(self, provider: str, key: str):
         """Persist a key to .env for a specific provider."""
         spec = PROVIDER_SPEC.get(provider)
-        if spec is None:
+        if spec is None or not spec["env_key"]:
             return
         if not ENV_PATH.exists():
             ENV_PATH.touch()

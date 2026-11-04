@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ctypes
 import os
+import signal
 import sys
 import threading
 import traceback
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
 from config import config
@@ -20,6 +21,7 @@ from transcription import transcribe, TranscriptionError
 from ai_processor import cleanup, AIError
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
+import whispercpp
 
 if sys.platform == "win32":
     from injector import inject_text, ElevationRequired
@@ -77,6 +79,7 @@ class App(QObject):
     def start(self):
         self.tray.start()
         self._apply_hotkeys()
+        self._apply_whisper_server()
 
         if sys.platform != "win32" and not keyhook_linux.is_installed():
             print(
@@ -88,8 +91,23 @@ class App(QObject):
             self.overlay.show_error_signal.emit("Can't read /dev/input")
             return
 
-        if not config.api_key:
+        if config.missing_api_key:
             self.overlay.show_error_signal.emit("No API key — open Settings")
+
+    def _apply_whisper_server(self):
+        """Run whisper-server with the selected model iff the local provider is active."""
+        if not config.is_local:
+            whispercpp.server.stop()
+            return
+        model = config.get("whisper_model", "base")
+        if not whispercpp.is_downloaded(model):
+            whispercpp.server.stop()
+            self.overlay.show_error_signal.emit(f"Model {model} not downloaded")
+            return
+        try:
+            whispercpp.server.start(model)  # restarts if the model changed
+        except whispercpp.WhisperServerError as e:
+            self.overlay.show_error_signal.emit(str(e))
 
     def _apply_hotkeys(self):
         self.hotkeys.apply(
@@ -107,6 +125,7 @@ class App(QObject):
             self.tray.stop()
         except Exception:
             pass
+        whispercpp.server.stop()
         self._qt_app.quit()
 
     # --- Push-to-talk pipeline ------------------------------------------
@@ -126,7 +145,7 @@ class App(QObject):
                 return
             self._ptt_active = True
         self.overlay.show_recording_signal.emit()
-        if not config.api_key:
+        if config.missing_api_key:
             self.overlay.notice_signal.emit("No API key")
 
     def _on_ptt_release(self):
@@ -147,7 +166,7 @@ class App(QObject):
             self.overlay.hide_signal.emit()
             return
 
-        if not config.api_key:
+        if config.missing_api_key:
             self.overlay.show_error_signal.emit("No API key — open Settings")
             return
 
@@ -217,6 +236,7 @@ class App(QObject):
         self._apply_hotkeys()
         self.recorder.set_device(config.get("input_device") or None)
         self.tray.refresh_menu()
+        self._apply_whisper_server()
 
     # --- Errors ---------------------------------------------------------
 
@@ -259,6 +279,24 @@ def main():
         # Non-fatal: surface via overlay after a moment so users know.
         # Many apps still work without admin; games/UAC-elevated apps won't.
         pass
+
+    # Ctrl+C / SIGTERM: quit cleanly instead of raising KeyboardInterrupt in
+    # whatever slot happens to run. A second Ctrl+C kills immediately.
+    def _on_signal(signum, _frame):
+        signal.signal(signum, signal.SIG_DFL)
+        reason = (
+            "Interrupted" if signum == signal.SIGINT else signal.Signals(signum).name
+        )
+        print(f"\nFlowClone: {reason}, shutting down.", file=sys.stderr, flush=True)
+        controller._quit()
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+    # Python only runs signal handlers between bytecodes; the Qt event loop is
+    # native code, so wake the interpreter periodically.
+    signal_timer = QTimer()
+    signal_timer.timeout.connect(lambda: None)
+    signal_timer.start(200)
 
     rc = qt_app.exec()
     try:
