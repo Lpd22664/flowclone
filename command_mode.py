@@ -36,9 +36,6 @@ class CommandModeController:
                 if self._stop_event is not None:
                     self._stop_event.set()
                 return
-            if not config.api_key:
-                self._overlay.show_error_signal.emit("No API key — open Settings")
-                return
             self._stop_event = threading.Event()
             self._thread = threading.Thread(
                 target=self._run, args=(self._stop_event,), daemon=True
@@ -57,6 +54,8 @@ class CommandModeController:
             selected = ""
 
         overlay.show_command_signal.emit()
+        if not config.api_key:
+            overlay.notice_signal.emit("No API key")
 
         silence_s = float(config.get("command_mode_silence_seconds", 1.5))
         silence_t = float(config.get("command_mode_silence_threshold", 0.01))
@@ -78,6 +77,10 @@ class CommandModeController:
 
         if duration < float(config.get("min_recording_seconds", 0.5)) or not wav_bytes:
             overlay.hide_signal.emit()
+            return
+
+        if not config.api_key:
+            overlay.show_error_signal.emit("No API key — open Settings")
             return
 
         overlay.show_processing_signal.emit()

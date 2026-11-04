@@ -23,6 +23,7 @@ IMPORTANT — three invariants preventing past bugs:
    Terminal) are the main repro: the overlay would just never become visible.
    Native SetWindowPos on each show puts us back on top.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -58,8 +59,12 @@ if sys.platform == "win32":
 
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
     _user32.SetWindowPos.argtypes = [
-        wintypes.HWND, wintypes.HWND,
-        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
         wintypes.UINT,
     ]
     _user32.SetWindowPos.restype = wintypes.BOOL
@@ -76,11 +81,16 @@ if sys.platform == "win32":
             _user32.SetWindowPos(
                 wintypes.HWND(hwnd_int),
                 wintypes.HWND(_HWND_TOPMOST),
-                0, 0, 0, 0, _SWP_FLAGS,
+                0,
+                0,
+                0,
+                0,
+                _SWP_FLAGS,
             )
         except Exception:
             pass
 else:
+
     def _assert_topmost(hwnd_int: int) -> None:
         pass
 
@@ -89,12 +99,12 @@ else:
 
 OVERLAY_W = 284
 OVERLAY_H = 48
-SHADOW_PADDING = 22     # pixels around pill for shadow spread
+SHADOW_PADDING = 22  # pixels around pill for shadow spread
 MARGIN_BOTTOM = 42
 CORNER_RADIUS = 14
 
-BG_COLOR = QColor(17, 18, 20, 235)          # near-black, slightly translucent
-BORDER_COLOR = QColor(255, 255, 255, 26)     # 10% white hairline
+BG_COLOR = QColor(17, 18, 20, 235)  # near-black, slightly translucent
+BORDER_COLOR = QColor(255, 255, 255, 26)  # 10% white hairline
 
 # Shadow tuning: y-offset + soft multi-layer falloff
 SHADOW_Y_OFFSET = 10
@@ -107,15 +117,41 @@ STATE_COMMAND = "command"
 STATE_ERROR = "error"
 
 STATE_META = {
-    STATE_RECORDING: {"dot": "#ff453a", "bar": "#ffffff", "mode": MODE_LISTEN,  "label": "Listening"},
-    STATE_PROCESSING: {"dot": "#9a9aa2", "bar": "#c7c7d1", "mode": MODE_PROCESS, "label": "Thinking"},
-    STATE_DONE:       {"dot": "#30d158", "bar": "#30d158", "mode": MODE_DONE,    "label": "Done"},
-    STATE_COMMAND:    {"dot": "#0a84ff", "bar": "#6ab0ff", "mode": MODE_LISTEN,  "label": "Command"},
-    STATE_ERROR:      {"dot": "#ff9f0a", "bar": "#ff9f0a", "mode": MODE_IDLE,    "label": "Error"},
+    STATE_RECORDING: {
+        "dot": "#ff453a",
+        "bar": "#ffffff",
+        "mode": MODE_LISTEN,
+        "label": "Listening",
+    },
+    STATE_PROCESSING: {
+        "dot": "#9a9aa2",
+        "bar": "#c7c7d1",
+        "mode": MODE_PROCESS,
+        "label": "Thinking",
+    },
+    STATE_DONE: {
+        "dot": "#30d158",
+        "bar": "#30d158",
+        "mode": MODE_DONE,
+        "label": "Done",
+    },
+    STATE_COMMAND: {
+        "dot": "#0a84ff",
+        "bar": "#6ab0ff",
+        "mode": MODE_LISTEN,
+        "label": "Command",
+    },
+    STATE_ERROR: {
+        "dot": "#ff9f0a",
+        "bar": "#ff9f0a",
+        "mode": MODE_IDLE,
+        "label": "Error",
+    },
 }
 
 
 # --- Atoms --------------------------------------------------------------
+
 
 class StatusDot(QWidget):
     """Solid colored dot, 8px. State-driven color; no animation."""
@@ -139,6 +175,7 @@ class StatusDot(QWidget):
 
 # --- Overlay ------------------------------------------------------------
 
+
 class Overlay(QWidget):
     show_recording_signal = pyqtSignal()
     show_processing_signal = pyqtSignal()
@@ -147,6 +184,9 @@ class Overlay(QWidget):
     show_error_signal = pyqtSignal(str)
     hide_signal = pyqtSignal()
     amplitude_signal = pyqtSignal(float)
+    # Warning shown in the current state (e.g. while listening) without
+    # changing it: orange dot + short label, visualiser keeps running.
+    notice_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -169,8 +209,10 @@ class Overlay(QWidget):
         # Layout — margins account for shadow padding + pill inner padding
         layout = QHBoxLayout(self)
         layout.setContentsMargins(
-            SHADOW_PADDING + 14, SHADOW_PADDING + 10,
-            SHADOW_PADDING + 16, SHADOW_PADDING + 10,
+            SHADOW_PADDING + 14,
+            SHADOW_PADDING + 10,
+            SHADOW_PADDING + 16,
+            SHADOW_PADDING + 10,
         )
         layout.setSpacing(10)
 
@@ -182,14 +224,16 @@ class Overlay(QWidget):
         layout.addWidget(self._viz, stretch=1)
 
         self._label = QLabel("", self)
-        self._label.setStyleSheet(
-            "color: rgba(255,255,255,210);"
+        self._label_style = (
             " font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Inter', 'SF Pro Text', sans-serif;"
             " font-size: 12px; letter-spacing: 0.2px;"
             " background: transparent;"
         )
+        self._label.setStyleSheet("color: rgba(255,255,255,210);" + self._label_style)
         self._label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         self._label.setMinimumWidth(64)
         layout.addWidget(self._label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
@@ -221,6 +265,7 @@ class Overlay(QWidget):
         self.show_error_signal.connect(self._on_error)
         self.hide_signal.connect(self._start_fade_out)
         self.amplitude_signal.connect(self._on_amplitude)
+        self.notice_signal.connect(self._on_notice)
 
     # --- Paint ----------------------------------------------------------
 
@@ -357,7 +402,10 @@ class Overlay(QWidget):
         self._dot.set_color(meta["dot"])
         self._viz.set_color(meta["bar"])
         self._viz.set_mode(meta["mode"])
-        self._label.setText(label_override if label_override is not None else meta["label"])
+        self._label.setStyleSheet("color: rgba(255,255,255,210);" + self._label_style)
+        self._label.setText(
+            label_override if label_override is not None else meta["label"]
+        )
 
         if not self.isVisible() or self._opacity.opacity() < 0.5:
             self._start_show()
@@ -390,3 +438,9 @@ class Overlay(QWidget):
     @pyqtSlot(float)
     def _on_amplitude(self, rms: float):
         self._viz.push_level(rms)
+
+    @pyqtSlot(str)
+    def _on_notice(self, msg: str):
+        self._dot.set_color(STATE_META[STATE_ERROR]["dot"])
+        self._label.setStyleSheet("color: #ff453a;" + self._label_style)
+        self._label.setText(msg)

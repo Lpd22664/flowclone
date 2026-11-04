@@ -116,9 +116,6 @@ class App(QObject):
         with self._ptt_lock:
             if self._ptt_active:
                 return
-            if not config.api_key:
-                self.overlay.show_error_signal.emit("No API key — open Settings")
-                return
             try:
                 self.recorder.start()
             except MicNotFoundError:
@@ -129,6 +126,8 @@ class App(QObject):
                 return
             self._ptt_active = True
         self.overlay.show_recording_signal.emit()
+        if not config.api_key:
+            self.overlay.notice_signal.emit("No API key")
 
     def _on_ptt_release(self):
         """Keyboard thread. Stop recording, spawn worker to transcribe/process/inject."""
@@ -146,6 +145,10 @@ class App(QObject):
         min_dur = float(config.get("min_recording_seconds", 0.5))
         if duration < min_dur or not wav_bytes:
             self.overlay.hide_signal.emit()
+            return
+
+        if not config.api_key:
+            self.overlay.show_error_signal.emit("No API key — open Settings")
             return
 
         self.overlay.show_processing_signal.emit()

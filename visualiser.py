@@ -4,6 +4,7 @@
 - process mode: synthetic sine-wave shimmer sweeps through bars
 - done/idle: bars ease to zero
 """
+
 from __future__ import annotations
 
 import math
@@ -22,10 +23,28 @@ MODE_DONE = "done"
 # multipliers sampled once — do NOT randomise at runtime, the visualiser must
 # be deterministic and calm.
 BAR_WEIGHTS = [
-    0.62, 0.88, 1.05, 0.76, 1.18, 0.94, 1.22, 1.00,
-    1.00, 1.22, 0.94, 1.18, 0.76, 1.05, 0.88, 0.62,
+    0.62,
+    0.88,
+    1.05,
+    0.76,
+    1.18,
+    0.94,
+    1.22,
+    1.00,
+    1.00,
+    1.22,
+    0.94,
+    1.18,
+    0.76,
+    1.05,
+    0.88,
+    0.62,
 ]
 BAR_COUNT = len(BAR_WEIGHTS)
+
+# Level → bar height mapping (dBFS of the 50 ms RMS window).
+DB_FLOOR = -50.0  # ≈ 0.003 RMS: typical room/mic noise, bars rest at minimum
+DB_CEIL = -20.0  # ≈ 0.1 RMS: loud speech, bars at full height
 
 
 class BarVisualiser(QWidget):
@@ -67,9 +86,12 @@ class BarVisualiser(QWidget):
         """Called from main thread (via Qt signal). Maps RMS 0..1 → target heights."""
         if self._mode != MODE_LISTEN:
             return
-        # Perceptual scaling: sqrt + gain. Real voice rarely exceeds ~0.25 RMS,
-        # so we boost and clamp. The 4.5x gain is chosen empirically.
-        magnitude = min(1.0, math.sqrt(max(0.0, rms)) * 2.2)
+        # Map on a dB scale: DB_FLOOR (room noise) → 0, DB_CEIL (loud speech)
+        # → 1. Mic gain varies hugely between devices (normal speech measured
+        # anywhere from ~0.01 to ~0.25 RMS); a log scale keeps quiet mics
+        # visibly moving without pinning loud ones.
+        db = 20.0 * math.log10(max(rms, 1e-9))
+        magnitude = (db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)
         for i, w in enumerate(BAR_WEIGHTS):
             self._targets[i] = max(0.08, min(1.0, magnitude * w))
 
