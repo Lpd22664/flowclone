@@ -15,38 +15,48 @@ and surface a clear overlay message when injection is blocked.
 
 All functions are silent-safe — any failure returns False / None so the
 caller can fall back without raising.
+
+Linux has no UIPI equivalent: uinput keystrokes reach every window, so
+`is_elevated()` simply reports root and relaunching is not supported.
 """
+
 from __future__ import annotations
 
 import ctypes
 import os
 import sys
-from ctypes import wintypes
 from typing import Optional
 
+if sys.platform == "win32":
+    from ctypes import wintypes
 
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-_shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
-_kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
-_advapi32.OpenProcessToken.argtypes = [
-    wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
-]
-_advapi32.OpenProcessToken.restype = wintypes.BOOL
+    _advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    _advapi32.OpenProcessToken.restype = wintypes.BOOL
 
-_advapi32.GetTokenInformation.argtypes = [
-    wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-    wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
-]
-_advapi32.GetTokenInformation.restype = wintypes.BOOL
+    _advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _advapi32.GetTokenInformation.restype = wintypes.BOOL
 
-_advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
-_advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
-_advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
-_advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+    _advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+    _advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+    _advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    _advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
 
 _TOKEN_QUERY = 0x0008
 _TokenIntegrityLevel = 25
@@ -65,22 +75,34 @@ def integrity_level() -> Optional[int]:
         0x3000 High (elevated)
         0x4000 System
     """
+    if sys.platform != "win32":
+        return None
     try:
         tok = wintypes.HANDLE()
         if not _advapi32.OpenProcessToken(
-            _kernel32.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(tok),
+            _kernel32.GetCurrentProcess(),
+            _TOKEN_QUERY,
+            ctypes.byref(tok),
         ):
             return None
         try:
             need = wintypes.DWORD()
             _advapi32.GetTokenInformation(
-                tok, _TokenIntegrityLevel, None, 0, ctypes.byref(need),
+                tok,
+                _TokenIntegrityLevel,
+                None,
+                0,
+                ctypes.byref(need),
             )
             if need.value == 0:
                 return None
             buf = (ctypes.c_ubyte * need.value)()
             if not _advapi32.GetTokenInformation(
-                tok, _TokenIntegrityLevel, buf, need.value, ctypes.byref(need),
+                tok,
+                _TokenIntegrityLevel,
+                buf,
+                need.value,
+                ctypes.byref(need),
             ):
                 return None
             sid_ptr = ctypes.c_void_p.from_buffer(buf)
@@ -95,7 +117,10 @@ def integrity_level() -> Optional[int]:
 
 
 def is_elevated() -> bool:
-    """True if running at High integrity or above (i.e. as administrator)."""
+    """True if running at High integrity or above (i.e. as administrator).
+    On Linux: True if running as root."""
+    if sys.platform != "win32":
+        return hasattr(os, "geteuid") and os.geteuid() == 0
     rid = integrity_level()
     return rid is not None and rid >= _INTEGRITY_HIGH
 
@@ -108,13 +133,22 @@ def _shell_execute_runas(exe: str, params: str, workdir: str) -> bool:
         0  — out of memory
     """
     _shell32.ShellExecuteW.argtypes = [
-        wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
-        wintypes.LPCWSTR, ctypes.c_int,
+        wintypes.HWND,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.c_int,
     ]
     _shell32.ShellExecuteW.restype = wintypes.HINSTANCE
     SW_SHOWNORMAL = 1
     result = _shell32.ShellExecuteW(
-        None, "runas", exe, params, workdir, SW_SHOWNORMAL,
+        None,
+        "runas",
+        exe,
+        params,
+        workdir,
+        SW_SHOWNORMAL,
     )
     # ShellExecuteW returns a value > 32 on success.
     return int(ctypes.cast(result, ctypes.c_void_p).value or 0) > 32
@@ -125,6 +159,8 @@ def relaunch_as_admin() -> bool:
     prompt was shown (user may still decline). The caller is responsible
     for exiting the current non-elevated instance after a successful
     relaunch — otherwise the user has two FlowClones running."""
+    if sys.platform != "win32":
+        return False
     if is_elevated():
         return False
 

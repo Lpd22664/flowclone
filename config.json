@@ -8,5 +8,6 @@
     "remove_filler_words": true,
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,
-    "command_mode_silence_threshold": 0.01
+    "command_mode_silence_threshold": 0.01,
+    "input_device": ""
 }

@@ -10,6 +10,7 @@ Storage location:
     (so the installed EXE can write user settings without needing write access
     to Program Files, and the EXE itself stays stateless).
 """
+
 import json
 import os
 import re
@@ -33,11 +34,7 @@ def _app_dir() -> Path:
     """Return the directory where user data (keys, preferences) lives."""
     if getattr(sys, "frozen", False):
         appdata = os.environ.get("APPDATA")
-        base = (
-            Path(appdata) / "FlowClone"
-            if appdata
-            else Path.home() / ".flowclone"
-        )
+        base = Path(appdata) / "FlowClone" if appdata else Path.home() / ".flowclone"
         base.mkdir(parents=True, exist_ok=True)
         return base
     return Path(__file__).parent
@@ -62,6 +59,7 @@ DEFAULTS = {
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,
     "command_mode_silence_threshold": 0.01,
+    "input_device": "",  # label from audio.list_input_devices(); "" = system default
 }
 
 # Per-provider model + endpoint config.

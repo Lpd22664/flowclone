@@ -1,7 +1,9 @@
 """FlowClone entry point."""
+
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import threading
 import traceback
@@ -16,9 +18,14 @@ from hotkeys import HotkeyManager
 from audio import Recorder, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import cleanup, AIError
-from injector import inject_text, ElevationRequired
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
+
+if sys.platform == "win32":
+    from injector import inject_text, ElevationRequired
+else:
+    import keyhook_linux
+    from injector_linux import inject_text, ElevationRequired
 
 
 def _is_admin() -> bool:
@@ -38,7 +45,9 @@ class App(QObject):
         self._qt_app = qt_app
 
         self.overlay = Overlay()
-        self.recorder = Recorder(on_level=self._emit_level)
+        self.recorder = Recorder(
+            on_level=self._emit_level, device=config.get("input_device") or None
+        )
         self._ptt_thread: threading.Thread | None = None
         self._ptt_active = False
         self._ptt_lock = threading.Lock()
@@ -68,6 +77,16 @@ class App(QObject):
     def start(self):
         self.tray.start()
         self._apply_hotkeys()
+
+        if sys.platform != "win32" and not keyhook_linux.is_installed():
+            print(
+                "FlowClone: no readable keyboard devices in /dev/input — global "
+                "hotkeys are disabled. Add your user to the 'input' group "
+                "(sudo usermod -aG input $USER) and log in again.",
+                file=sys.stderr,
+            )
+            self.overlay.show_error_signal.emit("Can't read /dev/input")
+            return
 
         if not config.api_key:
             self.overlay.show_error_signal.emit("No API key — open Settings")
@@ -193,6 +212,7 @@ class App(QObject):
     @pyqtSlot()
     def _on_settings_saved(self):
         self._apply_hotkeys()
+        self.recorder.set_device(config.get("input_device") or None)
         self.tray.refresh_menu()
 
     # --- Errors ---------------------------------------------------------
@@ -214,6 +234,16 @@ def _excepthook(exc_type, exc, tb):
 
 def main():
     sys.excepthook = _excepthook
+
+    if (
+        sys.platform.startswith("linux")
+        and os.environ.get("WAYLAND_DISPLAY")
+        and os.environ.get("DISPLAY")
+    ):
+        # Native Wayland doesn't let clients position their own windows or
+        # keep them above others, so the overlay would land at a random spot.
+        # Run Qt through XWayland instead (overridable via QT_QPA_PLATFORM).
+        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
     qt_app = QApplication(sys.argv)
     qt_app.setQuitOnLastWindowClosed(False)

@@ -1,11 +1,20 @@
-"""System tray icon. Runs pystray on a daemon thread; emits Qt signals on click."""
+"""System tray icon.
+
+Windows: pystray on a daemon thread; emits Qt signals on click.
+Linux: Qt's QSystemTrayIcon (StatusNotifierItem on KDE/GNOME), which needs
+no extra system packages and supports menus under Wayland.
+"""
+
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Callable
 
 from PIL import Image, ImageDraw
-import pystray
+
+if sys.platform == "win32":
+    import pystray
 
 from config import config
 import elevation
@@ -46,17 +55,21 @@ def _build_icon_image(size: int = 64) -> Image.Image:
     # left vertical
     draw.line(
         (cx - stand_w / 2, stand_top, cx - stand_w / 2, stand_bot - stand_w / 2 * 0.45),
-        fill=white, width=stroke,
+        fill=white,
+        width=stroke,
     )
     # right vertical
     draw.line(
         (cx + stand_w / 2, stand_top, cx + stand_w / 2, stand_bot - stand_w / 2 * 0.45),
-        fill=white, width=stroke,
+        fill=white,
+        width=stroke,
     )
     # bottom arc
     arc_box = (
-        cx - stand_w / 2, stand_bot - stand_w / 2,
-        cx + stand_w / 2, stand_bot + stand_w / 2,
+        cx - stand_w / 2,
+        stand_bot - stand_w / 2,
+        cx + stand_w / 2,
+        stand_bot + stand_w / 2,
     )
     draw.arc(arc_box, start=0, end=180, fill=white, width=stroke)
 
@@ -69,7 +82,8 @@ def _build_icon_image(size: int = 64) -> Image.Image:
     base_half = S * 0.13
     draw.line(
         (cx - base_half, stem_bot, cx + base_half, stem_bot),
-        fill=white, width=stroke,
+        fill=white,
+        width=stroke,
     )
 
     return img.resize((size, size), Image.LANCZOS)
@@ -161,3 +175,78 @@ class Tray:
                 self._icon.update_menu()
             except Exception:
                 pass
+
+
+class _QtTray:
+    """Linux tray built on QSystemTrayIcon. Same interface as Tray. Must be
+    created/started on the Qt main thread; menu callbacks run there too."""
+
+    def __init__(
+        self,
+        on_open_settings: Callable[[], None],
+        on_toggle_ai_cleanup: Callable[[bool], None],
+        on_quit: Callable[[], None],
+        on_relaunch_admin: Callable[[], None] | None = None,
+    ):
+        self._on_open_settings = on_open_settings
+        self._on_toggle_ai_cleanup = on_toggle_ai_cleanup
+        self._on_quit = on_quit
+        self._icon = None
+        self._menu = None
+        self._ai_action = None
+
+    def _toggle_ai(self, checked: bool):
+        config.set("ai_cleanup_enabled", bool(checked))
+        config.save()
+        self._on_toggle_ai_cleanup(bool(checked))
+
+    def _on_activated(self, reason):
+        from PyQt6.QtWidgets import QSystemTrayIcon
+
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._on_open_settings()
+
+    def start(self):
+        from PIL.ImageQt import ImageQt
+        from PyQt6.QtGui import QIcon, QPixmap
+        from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
+
+        header = "FlowClone (root)" if elevation.is_elevated() else "FlowClone"
+        self._menu = QMenu()
+        title = self._menu.addAction(header)
+        title.setEnabled(False)
+        self._menu.addSeparator()
+        self._menu.addAction("Settings").triggered.connect(
+            lambda _checked=False: self._on_open_settings()
+        )
+        self._ai_action = self._menu.addAction("Toggle AI Cleanup")
+        self._ai_action.setCheckable(True)
+        self._ai_action.toggled.connect(self._toggle_ai)
+        self._menu.addSeparator()
+        self._menu.addAction("Quit").triggered.connect(
+            lambda _checked=False: self._on_quit()
+        )
+        self._menu.aboutToShow.connect(self.refresh_menu)
+        self.refresh_menu()
+
+        icon = QIcon(QPixmap.fromImage(ImageQt(_build_icon_image())))
+        self._icon = QSystemTrayIcon(icon)
+        self._icon.setToolTip("FlowClone")
+        self._icon.setContextMenu(self._menu)
+        self._icon.activated.connect(self._on_activated)
+        self._icon.show()
+
+    def stop(self):
+        if self._icon is not None:
+            self._icon.hide()
+        self._icon = None
+
+    def refresh_menu(self):
+        if self._ai_action is not None:
+            self._ai_action.blockSignals(True)
+            self._ai_action.setChecked(bool(config.get("ai_cleanup_enabled", True)))
+            self._ai_action.blockSignals(False)
+
+
+if sys.platform != "win32":
+    Tray = _QtTray  # noqa: F811

@@ -3,6 +3,7 @@
 Both the Recorder and record_until_silence accept an optional on_level callback
 that receives a float 0..1 (RMS) roughly 20x/sec. The UI visualiser uses this.
 """
+
 import io
 import threading
 import time
@@ -30,19 +31,75 @@ def _rms(chunk: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(chunk))))
 
 
+def _device_label(device: dict, hostapis) -> str:
+    return f"{device['name']} ({hostapis[device['hostapi']]['name']})"
+
+
+def list_input_devices() -> list[str]:
+    """Labels of input devices that support our capture format (16 kHz mono).
+
+    Labels include the host API (e.g. 'MME', 'ALSA', 'PulseAudio') because the
+    same physical mic is often exposed through several of them. Labels are
+    stable across restarts, unlike device indices, so they're what we persist.
+    """
+    try:
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+    except Exception:
+        return []
+    labels: list[str] = []
+    for idx, dev in enumerate(devices):
+        if dev["max_input_channels"] < CHANNELS:
+            continue
+        try:
+            sd.check_input_settings(
+                device=idx, samplerate=SAMPLE_RATE, channels=CHANNELS
+            )
+        except Exception:
+            continue
+        label = _device_label(dev, hostapis)
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
+def resolve_input_device(label: Optional[str]) -> Optional[int]:
+    """Map a label from list_input_devices() to a sounddevice index.
+    Returns None (= system default) if label is empty or the device is gone."""
+    if not label:
+        return None
+    try:
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+    except Exception:
+        return None
+    for idx, dev in enumerate(devices):
+        if (
+            dev["max_input_channels"] >= CHANNELS
+            and _device_label(dev, hostapis) == label
+        ):
+            return idx
+    return None
+
+
 class Recorder:
     """Push-to-talk recorder. start() begins capture, stop() returns WAV bytes.
 
     Pass on_level=callback to receive real-time RMS levels (0..1) at ~20Hz.
     Callback is invoked from the sounddevice audio thread — keep it cheap.
+
+    `device` is a label from list_input_devices(); None/empty or a device
+    that's no longer present means the system default input.
     """
 
     def __init__(
         self,
         sample_rate: int = SAMPLE_RATE,
         on_level: Optional[LevelCallback] = None,
+        device: Optional[str] = None,
     ):
         self.sample_rate = sample_rate
+        self._device = device or None
         self._chunks: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
@@ -52,6 +109,10 @@ class Recorder:
 
     def set_level_callback(self, cb: Optional[LevelCallback]):
         self._on_level = cb
+
+    def set_device(self, device: Optional[str]):
+        """Takes effect on the next start()."""
+        self._device = device or None
 
     def _emit_levels(self, indata: np.ndarray):
         if self._on_level is None:
@@ -76,8 +137,11 @@ class Recorder:
     def start(self):
         if self._recording:
             return
+        device = resolve_input_device(self._device)
         try:
-            sd.check_input_settings(samplerate=self.sample_rate, channels=CHANNELS)
+            sd.check_input_settings(
+                device=device, samplerate=self.sample_rate, channels=CHANNELS
+            )
         except Exception as e:
             raise MicNotFoundError(str(e))
 
@@ -86,6 +150,7 @@ class Recorder:
             self._recording = True
             self._level_buf = np.empty(0, dtype=np.float32)
         self._stream = sd.InputStream(
+            device=device,
             samplerate=self.sample_rate,
             channels=CHANNELS,
             dtype="float32",
@@ -139,10 +204,14 @@ def record_until_silence(
     max_seconds: float = 30.0,
     stop_event: threading.Event | None = None,
     on_level: Optional[LevelCallback] = None,
+    device: Optional[str] = None,
 ) -> tuple[bytes, float]:
     """Record until <silence_seconds> of audio below RMS threshold, or stop_event set, or max_seconds reached."""
+    device_idx = resolve_input_device(device)
     try:
-        sd.check_input_settings(samplerate=SAMPLE_RATE, channels=CHANNELS)
+        sd.check_input_settings(
+            device=device_idx, samplerate=SAMPLE_RATE, channels=CHANNELS
+        )
     except Exception as e:
         raise MicNotFoundError(str(e))
 
@@ -154,6 +223,7 @@ def record_until_silence(
     saw_speech = False
 
     with sd.InputStream(
+        device=device_idx,
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype="float32",

@@ -15,15 +15,32 @@ threads so nothing heavy runs inside the LL-hook callback (Windows silently
 disables LL hooks whose callback exceeds LowLevelHooksTimeout, default
 300 ms, and sounddevice device enumeration can come close to that).
 """
+
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Callable, Optional
 
-import keyboard
-
 import debug_log
-import keyhook
+
+if sys.platform == "win32":
+    import keyboard
+    import keyhook
+
+    _add_hotkey = keyboard.add_hotkey
+    _remove_hotkey = keyboard.remove_hotkey
+
+    def _read_hotkey() -> str:
+        return keyboard.read_hotkey(suppress=False)
+else:
+    # `keyboard` needs root on Linux; keyhook_linux reads evdev directly and
+    # provides both press-and-hold and combo hotkeys.
+    import keyhook_linux as keyhook
+
+    _add_hotkey = keyhook.add_hotkey
+    _remove_hotkey = keyhook.remove_hotkey
+    _read_hotkey = keyhook.read_hotkey
 
 
 class HotkeyManager:
@@ -69,7 +86,7 @@ class HotkeyManager:
             hid = getattr(self, attr)
             if hid is not None:
                 try:
-                    keyboard.remove_hotkey(hid)
+                    _remove_hotkey(hid)
                 except Exception:
                     pass
             setattr(self, attr, None)
@@ -97,19 +114,23 @@ class HotkeyManager:
                 )
                 debug_log.log(
                     "hotkeys.ptt_registered",
-                    name=self._ptt_hotkey, vk=hex(vk), token=self._ptt_token,
+                    name=self._ptt_hotkey,
+                    vk=hex(vk),
+                    token=self._ptt_token,
                 )
 
             try:
-                self._command_hotkey_id = keyboard.add_hotkey(
-                    command, self._safe(self._on_command_toggle),
+                self._command_hotkey_id = _add_hotkey(
+                    command,
+                    self._safe(self._on_command_toggle),
                 )
             except Exception:
                 self._command_hotkey_id = None
 
             try:
-                self._settings_hotkey_id = keyboard.add_hotkey(
-                    settings, self._safe(self._on_settings),
+                self._settings_hotkey_id = _add_hotkey(
+                    settings,
+                    self._safe(self._on_settings),
                 )
             except Exception:
                 self._settings_hotkey_id = None
@@ -121,6 +142,7 @@ class HotkeyManager:
                 fn()
             except Exception:
                 pass
+
         return wrapper
 
     def shutdown(self):
@@ -141,4 +163,4 @@ class HotkeyManager:
         settings dialog, not sensitive to the cmd/terminal issue that affected
         push-to-talk detection.
         """
-        return keyboard.read_hotkey(suppress=False)
+        return _read_hotkey()

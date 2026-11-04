@@ -1,13 +1,19 @@
 """Command Mode: user selects text, presses hotkey, speaks a transform command."""
+
 from __future__ import annotations
 
+import sys
 import threading
 
 from config import config
 from audio import record_until_silence, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import apply_command, AIError
-from injector import copy_selection, inject_text, ElevationRequired
+
+if sys.platform == "win32":
+    from injector import copy_selection, inject_text, ElevationRequired
+else:
+    from injector_linux import copy_selection, inject_text, ElevationRequired
 
 
 class CommandModeController:
@@ -61,6 +67,7 @@ class CommandModeController:
                 silence_threshold=silence_t,
                 stop_event=stop_event,
                 on_level=overlay.amplitude_signal.emit,
+                device=config.get("input_device") or None,
             )
         except MicNotFoundError:
             overlay.show_error_signal.emit("No microphone detected")

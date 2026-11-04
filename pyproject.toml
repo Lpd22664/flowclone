@@ -1,0 +1,20 @@
+[project]
+name = "flowclone"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "evdev>=1.7 ; sys_platform == 'linux'",
+    "keyboard>=0.13.5 ; sys_platform == 'win32'",
+    "numpy>=1.24",
+    "openai>=1.50.0",
+    "pillow>=10.0.0",
+    "pyperclip>=1.8.2",
+    "pyqt6>=6.5",
+    "pystray>=0.19.4 ; sys_platform == 'win32'",
+    "python-dotenv>=1.0.0",
+    "pywin32>=306 ; sys_platform == 'win32'",
+    "scipy>=1.10",
+    "sounddevice>=0.4.6",
+]

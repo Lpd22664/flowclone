@@ -1,9 +1,10 @@
 """Settings dialog. Dark, minimal, tuned to match the overlay language."""
+
 from __future__ import annotations
 
+import sys
 import threading
 
-import keyboard
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -22,7 +23,9 @@ from PyQt6.QtWidgets import (
 )
 
 import autostart
+from audio import list_input_devices
 from config import config, PROVIDER_GROQ, PROVIDER_OPENAI, PROVIDER_SPEC
+from hotkeys import HotkeyManager
 
 
 LANGUAGES = [
@@ -171,7 +174,7 @@ class HotkeyCapture(QWidget):
 
     def _capture_worker(self):
         try:
-            combo = keyboard.read_hotkey(suppress=False)
+            combo = HotkeyManager.capture_hotkey()
         except Exception:
             combo = ""
         self.captured.emit(combo or self._field.text())
@@ -209,7 +212,9 @@ class SettingsDialog(QDialog):
         root.addWidget(divider)
 
         form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         form.setContentsMargins(0, 6, 0, 6)
         form.setHorizontalSpacing(18)
@@ -222,8 +227,11 @@ class SettingsDialog(QDialog):
         idx = max(
             0,
             next(
-                (i for i in range(self._provider.count())
-                 if self._provider.itemData(i) == current_provider),
+                (
+                    i
+                    for i in range(self._provider.count())
+                    if self._provider.itemData(i) == current_provider
+                ),
                 0,
             ),
         )
@@ -248,6 +256,27 @@ class SettingsDialog(QDialog):
         self._language.setCurrentIndex(idx)
         form.addRow("Transcription language", self._language)
 
+        self._mic = QComboBox()
+        # Long device names would otherwise stretch the whole dialog.
+        self._mic.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._mic.setMinimumContentsLength(24)
+        self._mic.addItem("System default", "")
+        for label in list_input_devices():
+            self._mic.addItem(label, label)
+        current_mic = config.get("input_device", "") or ""
+        idx = self._mic.findData(current_mic)
+        if idx < 0:
+            # Saved device isn't connected right now — keep it selectable so
+            # saving other settings doesn't silently drop the choice.
+            self._mic.addItem(f"{current_mic} — not connected", current_mic)
+            idx = self._mic.count() - 1
+        self._mic.setCurrentIndex(idx)
+        self._mic.setToolTip(self._mic.currentText())
+        self._mic.currentTextChanged.connect(self._mic.setToolTip)
+        form.addRow("Microphone", self._mic)
+
         self._ptt = HotkeyCapture(config.get("push_to_talk_hotkey", "right alt"))
         self._ptt.captured.connect(self._ptt.set_value)
         self._ptt.captured.connect(lambda _: self._ptt._btn.setEnabled(True))
@@ -266,15 +295,23 @@ class SettingsDialog(QDialog):
         self._fillers.setChecked(bool(config.get("remove_filler_words", True)))
         form.addRow("", self._fillers)
 
-        self._autostart = QCheckBox("Start FlowClone when Windows starts")
+        if sys.platform == "win32":
+            self._autostart = QCheckBox("Start FlowClone when Windows starts")
+            no_autostart_tip = (
+                "Only available in the installed FlowClone.exe build. "
+                "When running from source, add a shortcut to shell:startup instead."
+            )
+        else:
+            self._autostart = QCheckBox("Start FlowClone when you log in")
+            no_autostart_tip = (
+                "Only available in packaged builds. When running from source, "
+                "add a .desktop file to ~/.config/autostart instead."
+            )
         if autostart.is_supported():
             self._autostart.setChecked(autostart.is_enabled())
         else:
             self._autostart.setEnabled(False)
-            self._autostart.setToolTip(
-                "Only available in the installed FlowClone.exe build. "
-                "When running from source, add a shortcut to shell:startup instead."
-            )
+            self._autostart.setToolTip(no_autostart_tip)
         form.addRow("", self._autostart)
 
         self._dictionary = QPlainTextEdit()
@@ -285,10 +322,14 @@ class SettingsDialog(QDialog):
 
         root.addLayout(form)
 
-        info = QLabel(
-            "Admin rights may be required for global hotkeys to reach elevated apps.",
-            self,
-        )
+        if sys.platform == "win32":
+            info_text = "Admin rights may be required for global hotkeys to reach elevated apps."
+        else:
+            info_text = (
+                "Global hotkeys and typing need access to /dev/input and "
+                "/dev/uinput (e.g. add your user to the 'input' group)."
+            )
+        info = QLabel(info_text, self)
         info.setObjectName("footnote")
         info.setWordWrap(True)
         root.addWidget(info)
@@ -311,6 +352,7 @@ class SettingsDialog(QDialog):
         openai_key = self._openai_key.text().strip()
         groq_key = self._groq_key.text().strip()
         language = self._language.currentData() or "en"
+        input_device = self._mic.currentData() or ""
         ptt = self._ptt.value() or "right alt"
         cmd = self._cmd.value() or "ctrl+shift+space"
         ai_enabled = self._ai.isChecked()
@@ -324,6 +366,7 @@ class SettingsDialog(QDialog):
                 config.set_api_key_for(PROVIDER_GROQ, groq_key)
             config.set("provider", provider)
             config.set("language", language)
+            config.set("input_device", input_device)
             config.set("push_to_talk_hotkey", ptt)
             config.set("command_mode_hotkey", cmd)
             config.set("ai_cleanup_enabled", ai_enabled)
@@ -343,11 +386,15 @@ class SettingsDialog(QDialog):
                 else:
                     autostart.disable()
             except OSError as e:
+                where = (
+                    "Windows startup entry"
+                    if sys.platform == "win32"
+                    else "autostart entry"
+                )
                 QMessageBox.warning(
                     self,
                     "FlowClone",
-                    f"Couldn't update Windows startup entry:\n{e}\n\n"
-                    "Other settings were saved.",
+                    f"Couldn't update {where}:\n{e}\n\nOther settings were saved.",
                 )
 
         self.saved.emit()
