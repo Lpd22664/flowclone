@@ -9,6 +9,7 @@ dictionary.txt
 # Diagnostic log (opt-in, written when FLOWCLONE_DEBUG=1)
 debug.log
 whisper-server.log
+llama-server.log
 
 # Python
 __pycache__/
@@ -23,6 +24,7 @@ build/
 dist/
 bin/
 whisper-models/
+llama-models/
 *.spec
 
 # Editor

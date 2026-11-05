@@ -258,6 +258,22 @@ def download_model(
     dest = model_path(name, models_dir)
     if is_downloaded(name, models_dir):
         return dest
+    return download_file(
+        info.url, dest, info.size, info.sha256, name, progress=progress, cancel=cancel
+    )
+
+
+def download_file(
+    url: str,
+    dest: Path,
+    size: int,
+    sha256: str,
+    name: str,
+    progress: Optional[ProgressCallback] = None,
+    cancel: Optional[threading.Event] = None,
+) -> Path:
+    """Download `url` to `dest`, resuming `dest`.part and verifying the SHA-256.
+    `name` is only used in error messages."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
 
@@ -268,22 +284,22 @@ def download_model(
             while chunk := f.read(_CHUNK):
                 hasher.update(chunk)
                 done += len(chunk)
-        if done > info.size:
+        if done > size:
             part.unlink()
             hasher, done = hashlib.sha256(), 0
 
     attempt = 0
-    while done < info.size:
+    while done < size:
         if cancel is not None and cancel.is_set():
             raise DownloadCancelled("Download cancelled")
         try:
-            with _open(info.url, done) as resp:
+            with _open(url, done) as resp:
                 if done and resp.status != 206:
                     # Server ignored the Range header — start over.
                     hasher, done = hashlib.sha256(), 0
                 with open(part, "ab" if done else "wb") as f:
                     if progress:
-                        progress(done, info.size)
+                        progress(done, size)
                     while chunk := resp.read(_CHUNK):
                         if cancel is not None and cancel.is_set():
                             raise DownloadCancelled("Download cancelled")
@@ -292,20 +308,20 @@ def download_model(
                         done += len(chunk)
                         attempt = 0
                         if progress:
-                            progress(done, info.size)
-            if done < info.size:
+                            progress(done, size)
+            if done < size:
                 raise DownloadError("connection closed early")
         except (urllib.error.URLError, OSError, DownloadError) as e:
             if isinstance(e, DownloadCancelled):
                 raise
             if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403, 404):
-                raise DownloadError(f"Failed to download {info.url}: {e}") from e
+                raise DownloadError(f"Failed to download {url}: {e}") from e
             attempt += 1
             if attempt >= _RETRIES:
                 raise DownloadError(f"Failed to download model {name}: {e}") from e
             time.sleep(_RETRY_DELAY)
 
-    if hasher.hexdigest() != info.sha256:
+    if hasher.hexdigest() != sha256:
         part.unlink(missing_ok=True)
         raise DownloadError(f"Checksum mismatch for model {name}; please retry")
     os.replace(part, dest)

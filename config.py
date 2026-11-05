@@ -78,9 +78,15 @@ PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
 PROVIDER_LOCAL = "local"
 PROVIDER_LOCAL_LLM = "local_llm"
+PROVIDER_LOCAL_LLAMA = "local_llama"
 
 TRANSCRIPTION_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL)
-AI_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL_LLM)
+AI_PROVIDERS = (
+    PROVIDER_OPENAI,
+    PROVIDER_GROQ,
+    PROVIDER_LOCAL_LLAMA,
+    PROVIDER_LOCAL_LLM,
+)
 
 DEFAULTS = {
     "provider": PROVIDER_OPENAI,
@@ -89,7 +95,6 @@ DEFAULTS = {
     "command_mode_hotkey": "ctrl+shift+space",
     "settings_hotkey": "ctrl+shift+f",
     "ai_cleanup_enabled": True,
-    "remove_filler_words": True,
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,
     "command_mode_silence_threshold": 0.01,
@@ -99,6 +104,7 @@ DEFAULTS = {
     # Any OpenAI-compatible chat endpoint (Ollama, llama.cpp server, LM Studio…)
     "local_llm_url": "http://localhost:11434/v1",
     "local_llm_model": "llama3.2",
+    "llama_model": "smollm2-1.7b-instruct-q4_k_m",  # see llamacpp.MODELS
     "color_scheme": "system",  # "system", "dark" or "light"
 }
 
@@ -134,7 +140,16 @@ PROVIDER_SPEC = {
         "base_url": None,
         "whisper_model": None,
         "chat_model": None,
-        "display": "Local LLM",
+        "display": "Custom LLM",
+    },
+    # AI processing only, via bin/llama-server started by FlowClone; model
+    # comes from the "llama_model" setting.
+    PROVIDER_LOCAL_LLAMA: {
+        "env_key": None,
+        "base_url": None,
+        "whisper_model": None,
+        "chat_model": None,
+        "display": "Local llama.cpp",
     },
 }
 
@@ -230,6 +245,8 @@ class Config:
     def chat_model(self) -> str:
         if self.ai_provider == PROVIDER_LOCAL_LLM:
             return str(self.get("local_llm_model", "")).strip()
+        if self.ai_provider == PROVIDER_LOCAL_LLAMA:
+            return str(self.get("llama_model", ""))
         return PROVIDER_SPEC[self.ai_provider]["chat_model"]
 
     @property

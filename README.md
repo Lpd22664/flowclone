@@ -121,6 +121,14 @@ FlowClone then starts `whisper-server` on `127.0.0.1` in the background, restart
 
 Set *AI processing provider* to **Local LLM** and enter the URL and model of any OpenAI-compatible chat endpoint — e.g. [Ollama](https://ollama.com) (`http://localhost:11434/v1`, default), llama.cpp's `llama-server` (`http://localhost:8080/v1`) or LM Studio.
 
+To build llama.cpp yourself (binaries land in `bin/`; on apt-based Linux missing build packages are offered for install):
+
+```sh
+uv run scripts/build_llama_cpp.py                      # CPU build
+uv run scripts/build_llama_cpp.py --vulkan             # GPU build via Vulkan
+bin/llama-server -m model.gguf -ngl 99 --port 8080     # then use http://localhost:8080/v1
+```
+
 ## Hotkeys
 
 | Action | Default |
@@ -224,6 +232,7 @@ flowclone/
 ├── assets/flowclone-dark.ico   Light-theme icon (generated from tray.py)
 ├── scripts/generate_icon.py    Regenerates the ICO from the tray glyph
 ├── scripts/build_whisper_cpp.py  Downloads + compiles whisper.cpp into bin/
+├── scripts/build_llama_cpp.py    Downloads + compiles llama.cpp into bin/
 ├── dictionary.example.txt      Template for your custom vocabulary
 ├── .env.example                Template for API keys
 ├── config.json                 Default preferences

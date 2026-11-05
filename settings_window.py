@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from typing import Callable
 
 from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 import autostart
+import llamacpp
 import theme
 import whispercpp
 from audio import list_input_devices
@@ -295,7 +297,7 @@ SETTINGS_QSS_BY_SCHEME = {
 
 
 def _check_icon() -> QIcon:
-    """Green check mark marking downloaded whisper.cpp models."""
+    """Green check mark marking downloaded models."""
     pm = QPixmap(16, 16)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -356,12 +358,162 @@ class HotkeyCapture(QWidget):
         self.captured.emit(combo or self._field.text())
 
 
-class SettingsDialog(QDialog):
-    saved = pyqtSignal()
+class ModelPicker(QWidget):
+    """Model combo box with download button, progress bar and status line.
+
+    `backend` is a model module (whispercpp or llamacpp) providing MODELS,
+    is_downloaded(), download_model(), format_size() and DownloadCancelled.
+    `describe(name)` returns the extra parts shown after name and size.
+    """
+
     # (bytes_done, bytes_total) and (model name, error message or "") from
     # the download thread. `object` because sizes can exceed a C++ int.
     _download_progress = pyqtSignal(object, object)
     _download_finished = pyqtSignal(str, str)
+
+    def __init__(
+        self,
+        backend,
+        current: str,
+        describe: Callable[[str], list[str]] = lambda _name: [],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._backend = backend
+        self._describe = describe
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self._combo = QComboBox(self)
+        self._icon_downloaded = _check_icon()
+        self._icon_missing = _blank_icon()
+        for name in backend.MODELS:
+            self._combo.addItem(name, name)
+            self._refresh_model_item(self._combo.count() - 1)
+        self._combo.setCurrentIndex(max(0, self._combo.findData(current)))
+        self._combo.currentIndexChanged.connect(self._on_model_changed)
+        layout.addWidget(self._combo)
+
+        self._download_btn = QPushButton("Download", self)
+        self._download_btn.clicked.connect(self._on_download_clicked)
+        layout.addWidget(self._download_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._download_bar = QProgressBar(self)
+        self._download_bar.setRange(0, 1000)
+        layout.addWidget(self._download_bar)
+        self._download_status = QLabel("", self)
+        self._download_status.setObjectName("footnote")
+        self._download_status.setWordWrap(True)
+        layout.addWidget(self._download_status)
+
+        self._download_thread: threading.Thread | None = None
+        self._download_cancel = threading.Event()
+        self._downloading: str | None = None
+        self._download_progress.connect(self._on_download_progress)
+        self._download_finished.connect(self._on_download_finished)
+        self._update_download_ui()
+
+    def value(self) -> str | None:
+        return self._combo.currentData()
+
+    def cancel_download(self):
+        """Abort a running download; the partial file is kept and resumed later."""
+        self._download_cancel.set()
+
+    def _refresh_model_item(self, idx: int):
+        name = self._combo.itemData(idx)
+        info = self._backend.MODELS[name]
+        parts = [name, self._backend.format_size(info.size), *self._describe(name)]
+        downloaded = self._backend.is_downloaded(name)
+        self._combo.setItemText(idx, "  ·  ".join(parts))
+        self._combo.setItemIcon(
+            idx, self._icon_downloaded if downloaded else self._icon_missing
+        )
+        self._combo.setItemData(
+            idx,
+            "Downloaded" if downloaded else "Not downloaded",
+            Qt.ItemDataRole.ToolTipRole,
+        )
+
+    def _update_download_ui(self):
+        name = self._combo.currentData()
+        downloading = self._downloading is not None
+        self._download_btn.setVisible(
+            downloading or (name is not None and not self._backend.is_downloaded(name))
+        )
+        if downloading:
+            self._download_btn.setText(f"Cancel download of {self._downloading}")
+        elif name is not None:
+            size = self._backend.format_size(self._backend.MODELS[name].size)
+            self._download_btn.setText(f"Download {name} ({size})")
+        self._download_bar.setVisible(downloading)
+        self._download_status.setVisible(bool(self._download_status.text()))
+
+    def _on_model_changed(self):
+        if self._downloading is None:
+            self._download_status.setText("")
+        self._update_download_ui()
+
+    def _on_download_clicked(self):
+        if self._downloading is not None:
+            self._download_cancel.set()
+            self._download_btn.setEnabled(False)
+            return
+        name = self._combo.currentData()
+        self._downloading = name
+        self._download_cancel = threading.Event()
+        self._download_bar.setValue(0)
+        self._download_bar.setFormat("Connecting…")
+        self._download_status.setText("")
+        self._download_status.setVisible(False)
+        self._update_download_ui()
+        self._download_thread = threading.Thread(
+            target=self._download_worker,
+            args=(name, self._download_cancel),
+            daemon=True,
+        )
+        self._download_thread.start()
+
+    def _download_worker(self, name: str, cancel: threading.Event):
+        try:
+            self._backend.download_model(
+                name, progress=self._download_progress.emit, cancel=cancel
+            )
+            error = ""
+        except self._backend.DownloadCancelled:
+            error = "Download cancelled."
+        except Exception as e:
+            error = str(e) or type(e).__name__
+        self._download_finished.emit(name, error)
+
+    def _on_download_progress(self, done: int, total: int):
+        fmt = self._backend.format_size
+        self._download_bar.setValue(int(done * 1000 / total) if total else 0)
+        self._download_bar.setFormat(
+            f"{fmt(done)} / {fmt(total)}  ({done * 100 // max(total, 1)}%)"
+        )
+
+    def _on_download_finished(self, name: str, error: str):
+        self._downloading = None
+        self._download_btn.setEnabled(True)
+        idx = self._combo.findData(name)
+        if idx >= 0:
+            self._refresh_model_item(idx)
+        self._download_status.setText(error or f"Downloaded {name}.")
+        self._download_status.setVisible(True)
+        self._update_download_ui()
+
+
+def _describe_whisper_model(name: str) -> list[str]:
+    info = whispercpp.MODELS[name]
+    parts = ["English" if info.english_only else "Multilingual"]
+    if info.diarization:
+        parts.append("speaker turns")
+    return parts
+
+
+class SettingsDialog(QDialog):
+    saved = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -421,11 +573,11 @@ class SettingsDialog(QDialog):
         self._local_llm_url.setToolTip(
             "OpenAI-compatible endpoint, e.g. Ollama, llama.cpp server or LM Studio"
         )
-        form.addRow("Local LLM URL", self._local_llm_url)
+        form.addRow("Custom LLM URL", self._local_llm_url)
 
         self._local_llm_model = QLineEdit(config.get("local_llm_model", ""))
         self._local_llm_model.setPlaceholderText("llama3.2")
-        form.addRow("Local LLM model", self._local_llm_model)
+        form.addRow("Custom LLM model", self._local_llm_model)
 
         self._openai_key = QLineEdit(config.api_key_for(PROVIDER_OPENAI))
         self._openai_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -489,10 +641,6 @@ class SettingsDialog(QDialog):
         self._ai.setChecked(bool(config.get("ai_cleanup_enabled", True)))
         form.addRow("", self._ai)
 
-        self._fillers = QCheckBox("Remove filler words (um, uh, like…)")
-        self._fillers.setChecked(bool(config.get("remove_filler_words", True)))
-        form.addRow("", self._fillers)
-
         if sys.platform == "win32":
             self._autostart = QCheckBox("Start FlowClone when Windows starts")
             no_autostart_tip = (
@@ -536,41 +684,25 @@ class SettingsDialog(QDialog):
         local_heading.setObjectName("section")
         form.addRow(local_heading)
 
-        self._whisper_model = QComboBox()
-        self._icon_downloaded = _check_icon()
-        self._icon_missing = _blank_icon()
-        for name in whispercpp.MODELS:
-            self._whisper_model.addItem(name, name)
-            self._refresh_model_item(self._whisper_model.count() - 1)
-        idx = self._whisper_model.findData(config.get("whisper_model", "base"))
-        self._whisper_model.setCurrentIndex(max(0, idx))
-        self._whisper_model.currentIndexChanged.connect(self._on_model_changed)
+        self._whisper_model = ModelPicker(
+            whispercpp,
+            config.get("whisper_model", "base"),
+            _describe_whisper_model,
+            self,
+        )
         form.addRow("Model", self._whisper_model)
 
-        download_box = QWidget(self)
-        download_layout = QVBoxLayout(download_box)
-        download_layout.setContentsMargins(0, 0, 0, 0)
-        download_layout.setSpacing(6)
-        self._download_btn = QPushButton("Download", download_box)
-        self._download_btn.clicked.connect(self._on_download_clicked)
-        download_layout.addWidget(
-            self._download_btn, alignment=Qt.AlignmentFlag.AlignLeft
-        )
-        self._download_bar = QProgressBar(download_box)
-        self._download_bar.setRange(0, 1000)
-        download_layout.addWidget(self._download_bar)
-        self._download_status = QLabel("", download_box)
-        self._download_status.setObjectName("footnote")
-        self._download_status.setWordWrap(True)
-        download_layout.addWidget(self._download_status)
-        form.addRow("", download_box)
+        llama_divider = QFrame(self)
+        llama_divider.setObjectName("divider")
+        form.addRow(llama_divider)
+        llama_heading = QLabel("Local AI processing (llama.cpp)", self)
+        llama_heading.setObjectName("section")
+        form.addRow(llama_heading)
 
-        self._download_thread: threading.Thread | None = None
-        self._download_cancel = threading.Event()
-        self._downloading: str | None = None
-        self._download_progress.connect(self._on_download_progress)
-        self._download_finished.connect(self._on_download_finished)
-        self._update_download_ui()
+        self._llama_model = ModelPicker(
+            llamacpp, config.get("llama_model", ""), parent=self
+        )
+        form.addRow("Model", self._llama_model)
 
         root.addLayout(form)
 
@@ -617,99 +749,11 @@ class SettingsDialog(QDialog):
         if self.isVisible():
             self.adjustSize()  # shrink when rows get hidden
 
-    # --- whisper.cpp models ----------------------------------------------
-
-    def _refresh_model_item(self, idx: int):
-        name = self._whisper_model.itemData(idx)
-        info = whispercpp.MODELS[name]
-        parts = [
-            name,
-            whispercpp.format_size(info.size),
-            "English" if info.english_only else "Multilingual",
-        ]
-        if info.diarization:
-            parts.append("speaker turns")
-        downloaded = whispercpp.is_downloaded(name)
-        self._whisper_model.setItemText(idx, "  ·  ".join(parts))
-        self._whisper_model.setItemIcon(
-            idx, self._icon_downloaded if downloaded else self._icon_missing
-        )
-        self._whisper_model.setItemData(
-            idx,
-            "Downloaded" if downloaded else "Not downloaded",
-            Qt.ItemDataRole.ToolTipRole,
-        )
-
-    def _update_download_ui(self):
-        name = self._whisper_model.currentData()
-        downloading = self._downloading is not None
-        self._download_btn.setVisible(downloading or not whispercpp.is_downloaded(name))
-        if downloading:
-            self._download_btn.setText(f"Cancel download of {self._downloading}")
-        else:
-            size = whispercpp.format_size(whispercpp.MODELS[name].size)
-            self._download_btn.setText(f"Download {name} ({size})")
-        self._download_bar.setVisible(downloading)
-        self._download_status.setVisible(bool(self._download_status.text()))
-
-    def _on_model_changed(self):
-        if self._downloading is None:
-            self._download_status.setText("")
-        self._update_download_ui()
-
-    def _on_download_clicked(self):
-        if self._downloading is not None:
-            self._download_cancel.set()
-            self._download_btn.setEnabled(False)
-            return
-        name = self._whisper_model.currentData()
-        self._downloading = name
-        self._download_cancel = threading.Event()
-        self._download_bar.setValue(0)
-        self._download_bar.setFormat("Connecting…")
-        self._download_status.setText("")
-        self._download_status.setVisible(False)
-        self._update_download_ui()
-        self._download_thread = threading.Thread(
-            target=self._download_worker,
-            args=(name, self._download_cancel),
-            daemon=True,
-        )
-        self._download_thread.start()
-
-    def _download_worker(self, name: str, cancel: threading.Event):
-        try:
-            whispercpp.download_model(
-                name, progress=self._download_progress.emit, cancel=cancel
-            )
-            error = ""
-        except whispercpp.DownloadCancelled:
-            error = "Download cancelled."
-        except Exception as e:
-            error = str(e) or type(e).__name__
-        self._download_finished.emit(name, error)
-
-    def _on_download_progress(self, done: int, total: int):
-        self._download_bar.setValue(int(done * 1000 / total) if total else 0)
-        self._download_bar.setFormat(
-            f"{whispercpp.format_size(done)} / {whispercpp.format_size(total)}"
-            f"  ({done * 100 // max(total, 1)}%)"
-        )
-
-    def _on_download_finished(self, name: str, error: str):
-        self._downloading = None
-        self._download_btn.setEnabled(True)
-        idx = self._whisper_model.findData(name)
-        if idx >= 0:
-            self._refresh_model_item(idx)
-        self._download_status.setText(error or f"Downloaded {name}.")
-        self._download_status.setVisible(True)
-        self._update_download_ui()
-
     def done(self, result: int):
-        # Closing the dialog aborts a running download; the partial file is
+        # Closing the dialog aborts running downloads; partial files are
         # kept and resumed on the next attempt.
-        self._download_cancel.set()
+        self._whisper_model.cancel_download()
+        self._llama_model.cancel_download()
         super().done(result)
 
     def _on_save(self):
@@ -721,13 +765,13 @@ class SettingsDialog(QDialog):
         groq_key = self._groq_key.text().strip()
         language = self._language.currentData() or "en"
         input_device = self._mic.currentData() or ""
-        whisper_model = self._whisper_model.currentData() or "base"
+        whisper_model = self._whisper_model.value() or "base"
+        llama_model = self._llama_model.value() or ""
         ptt = self._ptt.value() or "right alt"
         cmd = self._cmd.value() or "ctrl+shift+space"
         settings_hk = self._settings_hk.value() or "ctrl+shift+f"
         color_scheme = self._color_scheme.currentData() or theme.SCHEME_SYSTEM
         ai_enabled = self._ai.isChecked()
-        remove_fillers = self._fillers.isChecked()
         dict_text = self._dictionary.toPlainText()
 
         try:
@@ -742,12 +786,12 @@ class SettingsDialog(QDialog):
             config.set("language", language)
             config.set("input_device", input_device)
             config.set("whisper_model", whisper_model)
+            config.set("llama_model", llama_model)
             config.set("push_to_talk_hotkey", ptt)
             config.set("command_mode_hotkey", cmd)
             config.set("settings_hotkey", settings_hk)
             config.set("color_scheme", color_scheme)
             config.set("ai_cleanup_enabled", ai_enabled)
-            config.set("remove_filler_words", remove_fillers)
             config.save()
             config.save_dictionary(dict_text)
         except Exception as e:

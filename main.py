@@ -13,7 +13,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QApplication
 
-from config import config
+from config import config, PROVIDER_LOCAL_LLAMA
 from overlay import Overlay
 from tray import Tray
 from hotkeys import HotkeyManager
@@ -22,6 +22,7 @@ from transcription import transcribe, TranscriptionError
 from ai_processor import cleanup, AIError
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
+import llamacpp
 import whispercpp
 
 if sys.platform == "win32":
@@ -86,6 +87,7 @@ class App(QObject):
         )
         self._apply_hotkeys()
         self._apply_whisper_server()
+        self._apply_llama_server()
 
         if sys.platform != "win32" and not keyhook_linux.is_installed():
             print(
@@ -115,6 +117,21 @@ class App(QObject):
         except whispercpp.WhisperServerError as e:
             self.overlay.show_error_signal.emit(str(e))
 
+    def _apply_llama_server(self):
+        """Run llama-server with the selected model iff the local llama.cpp AI provider is active."""
+        if config.ai_provider != PROVIDER_LOCAL_LLAMA:
+            llamacpp.server.stop()
+            return
+        model = config.get("llama_model", "")
+        if model not in llamacpp.MODELS or not llamacpp.is_downloaded(model):
+            llamacpp.server.stop()
+            self.overlay.show_error_signal.emit(f"Model {model} not downloaded")
+            return
+        try:
+            llamacpp.server.start(model)  # restarts if the model changed
+        except llamacpp.LlamaServerError as e:
+            self.overlay.show_error_signal.emit(str(e))
+
     def _apply_hotkeys(self):
         self.hotkeys.apply(
             ptt=config.get("push_to_talk_hotkey", "right alt"),
@@ -132,6 +149,7 @@ class App(QObject):
         except Exception:
             pass
         whispercpp.server.stop()
+        llamacpp.server.stop()
         self._qt_app.quit()
 
     # --- Push-to-talk pipeline ------------------------------------------
@@ -243,6 +261,7 @@ class App(QObject):
         self.tray.refresh_menu()
         self.tray.refresh_icon()
         self._apply_whisper_server()
+        self._apply_llama_server()
 
     # --- Errors ---------------------------------------------------------
 
