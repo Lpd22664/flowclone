@@ -108,7 +108,8 @@ Paste your key(s) into Settings (`Ctrl+Shift+F` or right-click tray → Settings
 
    ```sh
    uv run scripts/build_whisper_cpp.py                    # CPU build
-   uv run scripts/build_whisper_cpp.py -DGGML_VULKAN=ON   # or a GPU build (Vulkan, -DGGML_CUDA=ON, …)
+   uv run scripts/build_whisper_cpp.py --vulkan           # GPU build via Vulkan (needs glslc + Vulkan headers)
+   uv run scripts/build_whisper_cpp.py -DGGML_CUDA=ON     # or other ggml backends via CMake flags
    ```
 
 2. In Settings, choose a model under *Local transcription (whisper.cpp)* and click **Download**. Models are stored in `whisper-models/` and verified against their SHA-256; interrupted downloads resume. (CLI alternative: `uv run whispercpp.py <model>`; run without arguments to list models.)
