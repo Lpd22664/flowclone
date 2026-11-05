@@ -18,9 +18,15 @@ if sys.platform == "win32":
 
 from config import config
 import elevation
+import theme
+
+# Glyph colours: light mic for dark themes (assets/flowclone.ico), dark mic
+# for light themes (assets/flowclone-dark.ico).
+GLYPH_LIGHT = (240, 240, 244, 255)
+GLYPH_DARK = (29, 29, 31, 255)
 
 
-def _build_icon_image(size: int = 64) -> Image.Image:
+def _build_icon_image(size: int = 64, color=GLYPH_LIGHT) -> Image.Image:
     """Render a clean, thin-stroke mic glyph on a transparent background.
 
     Transparent background reads better than a filled circle in both light
@@ -32,7 +38,7 @@ def _build_icon_image(size: int = 64) -> Image.Image:
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    white = (240, 240, 244, 255)
+    white = color
     stroke = max(2, int(S * 0.07))
     half = stroke / 2
 
@@ -87,6 +93,12 @@ def _build_icon_image(size: int = 64) -> Image.Image:
     )
 
     return img.resize((size, size), Image.LANCZOS)
+
+
+def _icon_image(size: int = 64) -> Image.Image:
+    """Tray glyph for the current colour scheme."""
+    light = theme.effective_scheme() == theme.SCHEME_LIGHT
+    return _build_icon_image(size, GLYPH_DARK if light else GLYPH_LIGHT)
 
 
 class Tray:
@@ -150,7 +162,7 @@ class Tray:
         return pystray.Menu(*items)
 
     def start(self):
-        image = _build_icon_image()
+        image = _icon_image()
         self._icon = pystray.Icon(
             "FlowClone",
             image,
@@ -175,6 +187,10 @@ class Tray:
                 self._icon.update_menu()
             except Exception:
                 pass
+
+    def refresh_icon(self):
+        if self._icon is not None:
+            self._icon.icon = _icon_image()
 
 
 class _QtTray:
@@ -207,8 +223,6 @@ class _QtTray:
             self._on_open_settings()
 
     def start(self):
-        from PIL.ImageQt import ImageQt
-        from PyQt6.QtGui import QIcon, QPixmap
         from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
         header = "FlowClone (root)" if elevation.is_elevated() else "FlowClone"
@@ -229,8 +243,7 @@ class _QtTray:
         self._menu.aboutToShow.connect(self.refresh_menu)
         self.refresh_menu()
 
-        icon = QIcon(QPixmap.fromImage(ImageQt(_build_icon_image())))
-        self._icon = QSystemTrayIcon(icon)
+        self._icon = QSystemTrayIcon(self._qicon())
         self._icon.setToolTip("FlowClone")
         self._icon.setContextMenu(self._menu)
         self._icon.activated.connect(self._on_activated)
@@ -240,6 +253,17 @@ class _QtTray:
         if self._icon is not None:
             self._icon.hide()
         self._icon = None
+
+    @staticmethod
+    def _qicon():
+        from PIL.ImageQt import ImageQt
+        from PyQt6.QtGui import QIcon, QPixmap
+
+        return QIcon(QPixmap.fromImage(ImageQt(_icon_image())))
+
+    def refresh_icon(self):
+        if self._icon is not None:
+            self._icon.setIcon(self._qicon())
 
     def refresh_menu(self):
         if self._ai_action is not None:

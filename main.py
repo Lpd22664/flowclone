@@ -10,6 +10,7 @@ import threading
 import traceback
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QApplication
 
 from config import config
@@ -78,6 +79,11 @@ class App(QObject):
 
     def start(self):
         self.tray.start()
+        # "Follow system" colour scheme: swap the tray glyph when the desktop
+        # switches between light and dark.
+        QGuiApplication.styleHints().colorSchemeChanged.connect(
+            lambda _scheme: self.tray.refresh_icon()
+        )
         self._apply_hotkeys()
         self._apply_whisper_server()
 
@@ -132,6 +138,9 @@ class App(QObject):
 
     def _on_ptt_press(self):
         """Keyboard thread. Start recording, flash overlay."""
+        if config.missing_api_key:
+            self.overlay.show_error_signal.emit("No API key — open Settings")
+            return
         with self._ptt_lock:
             if self._ptt_active:
                 return
@@ -145,8 +154,6 @@ class App(QObject):
                 return
             self._ptt_active = True
         self.overlay.show_recording_signal.emit()
-        if config.missing_api_key:
-            self.overlay.notice_signal.emit("No API key")
 
     def _on_ptt_release(self):
         """Keyboard thread. Stop recording, spawn worker to transcribe/process/inject."""
@@ -164,10 +171,6 @@ class App(QObject):
         min_dur = float(config.get("min_recording_seconds", 0.5))
         if duration < min_dur or not wav_bytes:
             self.overlay.hide_signal.emit()
-            return
-
-        if config.missing_api_key:
-            self.overlay.show_error_signal.emit("No API key — open Settings")
             return
 
         self.overlay.show_processing_signal.emit("Transcribing")
@@ -238,6 +241,7 @@ class App(QObject):
         self._apply_hotkeys()
         self.recorder.set_device(config.get("input_device") or None)
         self.tray.refresh_menu()
+        self.tray.refresh_icon()
         self._apply_whisper_server()
 
     # --- Errors ---------------------------------------------------------

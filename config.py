@@ -99,6 +99,7 @@ DEFAULTS = {
     # Any OpenAI-compatible chat endpoint (Ollama, llama.cpp server, LM Studio…)
     "local_llm_url": "http://localhost:11434/v1",
     "local_llm_model": "llama3.2",
+    "color_scheme": "system",  # "system", "dark" or "light"
 }
 
 # Per-provider model + endpoint config.

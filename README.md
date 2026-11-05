@@ -14,6 +14,7 @@ An open-source voice-dictation tool for Windows and Linux in the spirit of Wispr
 - **Mix and match providers** — pick the transcription provider (OpenAI, Groq, local whisper.cpp) and the AI processing provider (OpenAI, Groq, local LLM) independently.
 - **Fully offline mode** — transcribe with whisper.cpp and clean up with a local LLM; no API keys, no internet. Download whisper.cpp models from Settings and FlowClone runs and supervises a local `whisper-server` for you.
 - **Settings** — `Ctrl+Shift+F` (or right-click the tray icon). Includes microphone selection; all three hotkeys are configurable.
+- **Light and dark themes** — follows your system's color scheme by default, or pick one in Settings. Applies to the overlay and settings window.
 
 ## Why FlowClone?
 
@@ -218,7 +219,8 @@ flowclone/
 ├── visualiser.py               Live 16-bar audio visualiser
 ├── tray.py                     System tray icon + menu (pystray / Qt)
 ├── settings_window.py          Dark-themed settings dialog
-├── assets/flowclone.ico        EXE icon (generated from tray.py)
+├── assets/flowclone.ico        EXE + dark-theme icon (generated from tray.py)
+├── assets/flowclone-dark.ico   Light-theme icon (generated from tray.py)
 ├── scripts/generate_icon.py    Regenerates the ICO from the tray glyph
 ├── scripts/build_whisper_cpp.py  Downloads + compiles whisper.cpp into bin/
 ├── dictionary.example.txt      Template for your custom vocabulary

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 import autostart
+import theme
 import whispercpp
 from audio import list_input_devices
 from config import (
@@ -169,6 +170,130 @@ QFrame#divider {
 """
 
 
+SETTINGS_QSS_LIGHT = """
+QDialog {
+    background-color: #f5f5f7;
+    color: #1d1d1f;
+}
+QLabel {
+    color: #1d1d1f;
+    font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Inter', 'SF Pro Text', sans-serif;
+    font-size: 13px;
+}
+QLabel#heading {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    padding-bottom: 2px;
+}
+QLabel#subheading {
+    color: #6e6e73;
+    font-size: 12px;
+    padding-bottom: 8px;
+}
+QLabel#footnote {
+    color: #86868b;
+    font-size: 11px;
+}
+QLabel#section {
+    font-size: 14px;
+    font-weight: 600;
+    padding-top: 6px;
+}
+QProgressBar {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    min-height: 18px;
+    text-align: center;
+    font-size: 11px;
+}
+QProgressBar::chunk {
+    background-color: #007aff;
+    border-radius: 5px;
+}
+QLineEdit, QPlainTextEdit, QComboBox {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    padding: 7px 10px;
+    selection-background-color: #007aff;
+    selection-color: #ffffff;
+    font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Inter', sans-serif;
+    font-size: 13px;
+}
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
+    border: 1px solid #007aff;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    selection-background-color: #007aff;
+    selection-color: #ffffff;
+    border: 1px solid #d2d2d7;
+    outline: none;
+}
+QCheckBox {
+    color: #1d1d1f;
+    spacing: 8px;
+    font-size: 13px;
+}
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid #c7c7cc;
+    border-radius: 4px;
+    background: #ffffff;
+}
+QCheckBox::indicator:checked {
+    background: #007aff;
+    border: 1px solid #007aff;
+    image: none;
+}
+QPushButton {
+    background-color: #ffffff;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 500;
+}
+QPushButton:hover {
+    background-color: #ececf0;
+}
+QPushButton#primary {
+    background-color: #007aff;
+    border: 1px solid #007aff;
+    color: white;
+}
+QPushButton#primary:hover {
+    background-color: #0a84ff;
+}
+QPushButton:disabled {
+    color: #a1a1a6;
+    background-color: #f0f0f2;
+    border: 1px solid #e5e5ea;
+}
+QFrame#divider {
+    background-color: #e5e5ea;
+    max-height: 1px;
+    min-height: 1px;
+    border: none;
+}
+"""
+
+SETTINGS_QSS_BY_SCHEME = {
+    theme.SCHEME_DARK: SETTINGS_QSS,
+    theme.SCHEME_LIGHT: SETTINGS_QSS_LIGHT,
+}
+
+
 def _check_icon() -> QIcon:
     """Green check mark marking downloaded whisper.cpp models."""
     pm = QPixmap(16, 16)
@@ -243,7 +368,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("FlowClone Settings")
         self.setModal(False)
         self.setMinimumWidth(520)
-        self.setStyleSheet(SETTINGS_QSS)
+        self._apply_color_scheme(config.get("color_scheme", theme.SCHEME_SYSTEM))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -355,7 +480,9 @@ class SettingsDialog(QDialog):
 
         self._settings_hk = HotkeyCapture(config.get("settings_hotkey", "ctrl+shift+f"))
         self._settings_hk.captured.connect(self._settings_hk.set_value)
-        self._settings_hk.captured.connect(lambda _: self._settings_hk._btn.setEnabled(True))
+        self._settings_hk.captured.connect(
+            lambda _: self._settings_hk._btn.setEnabled(True)
+        )
         form.addRow("Settings hotkey", self._settings_hk)
 
         self._ai = QCheckBox("Enable AI cleanup")
@@ -384,6 +511,17 @@ class SettingsDialog(QDialog):
             self._autostart.setEnabled(False)
             self._autostart.setToolTip(no_autostart_tip)
         form.addRow("", self._autostart)
+
+        self._color_scheme = QComboBox()
+        for value, label in theme.SCHEMES:
+            self._color_scheme.addItem(label, value)
+        self._color_scheme.setCurrentIndex(
+            max(0, self._color_scheme.findData(config.get("color_scheme")))
+        )
+        self._color_scheme.currentIndexChanged.connect(
+            lambda: self._apply_color_scheme(self._color_scheme.currentData())
+        )
+        form.addRow("Color scheme", self._color_scheme)
 
         self._dictionary = QPlainTextEdit()
         self._dictionary.setPlaceholderText("One term per line (proper nouns, jargon…)")
@@ -460,6 +598,12 @@ class SettingsDialog(QDialog):
         buttons.addWidget(cancel_btn)
         buttons.addWidget(save_btn)
         root.addLayout(buttons)
+
+    # --- Color scheme ------------------------------------------------------
+
+    def _apply_color_scheme(self, choice: str | None):
+        """Restyle the dialog; also used to preview the combo selection."""
+        self.setStyleSheet(SETTINGS_QSS_BY_SCHEME[theme.effective_scheme(choice)])
 
     # --- Provider-specific rows ------------------------------------------
 
@@ -581,6 +725,7 @@ class SettingsDialog(QDialog):
         ptt = self._ptt.value() or "right alt"
         cmd = self._cmd.value() or "ctrl+shift+space"
         settings_hk = self._settings_hk.value() or "ctrl+shift+f"
+        color_scheme = self._color_scheme.currentData() or theme.SCHEME_SYSTEM
         ai_enabled = self._ai.isChecked()
         remove_fillers = self._fillers.isChecked()
         dict_text = self._dictionary.toPlainText()
@@ -600,6 +745,7 @@ class SettingsDialog(QDialog):
             config.set("push_to_talk_hotkey", ptt)
             config.set("command_mode_hotkey", cmd)
             config.set("settings_hotkey", settings_hk)
+            config.set("color_scheme", color_scheme)
             config.set("ai_cleanup_enabled", ai_enabled)
             config.set("remove_filler_words", remove_fillers)
             config.save()

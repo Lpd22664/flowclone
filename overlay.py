@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
 )
 
 import debug_log
+import theme
 from visualiser import BarVisualiser, MODE_DONE, MODE_IDLE, MODE_LISTEN, MODE_PROCESS
 
 
@@ -103,8 +104,38 @@ SHADOW_PADDING = 22  # pixels around pill for shadow spread
 MARGIN_BOTTOM = 42
 CORNER_RADIUS = 14
 
-BG_COLOR = QColor(17, 18, 20, 235)  # near-black, slightly translucent
-BORDER_COLOR = QColor(255, 255, 255, 26)  # 10% white hairline
+# Per colour scheme (see theme.py): pill fill, hairline border, label text,
+# notice text, shadow strength, and (dot, bar) colours for each state.
+PALETTES = {
+    "dark": {
+        "bg": QColor(17, 18, 20, 235),  # near-black, slightly translucent
+        "border": QColor(255, 255, 255, 26),  # 10% white hairline
+        "label": "rgba(255,255,255,210)",
+        "notice": "#ff453a",
+        "shadow": 1.0,
+        "states": {
+            "recording": ("#ff453a", "#ffffff"),
+            "processing": ("#9a9aa2", "#c7c7d1"),
+            "done": ("#30d158", "#30d158"),
+            "command": ("#0a84ff", "#6ab0ff"),
+            "error": ("#ff9f0a", "#ff9f0a"),
+        },
+    },
+    "light": {
+        "bg": QColor(250, 250, 252, 240),
+        "border": QColor(0, 0, 0, 30),
+        "label": "rgba(0,0,0,200)",
+        "notice": "#d70015",
+        "shadow": 0.5,
+        "states": {
+            "recording": ("#ff3b30", "#1d1d1f"),
+            "processing": ("#8e8e93", "#6e6e73"),
+            "done": ("#28a745", "#28a745"),
+            "command": ("#007aff", "#007aff"),
+            "error": ("#ff9500", "#e08600"),
+        },
+    },
+}
 
 # Shadow tuning: y-offset + soft multi-layer falloff
 SHADOW_Y_OFFSET = 10
@@ -118,32 +149,22 @@ STATE_ERROR = "error"
 
 STATE_META = {
     STATE_RECORDING: {
-        "dot": "#ff453a",
-        "bar": "#ffffff",
         "mode": MODE_LISTEN,
         "label": "Listening",
     },
     STATE_PROCESSING: {
-        "dot": "#9a9aa2",
-        "bar": "#c7c7d1",
         "mode": MODE_PROCESS,
         "label": "Transcribing",
     },
     STATE_DONE: {
-        "dot": "#30d158",
-        "bar": "#30d158",
         "mode": MODE_DONE,
         "label": "Done",
     },
     STATE_COMMAND: {
-        "dot": "#0a84ff",
-        "bar": "#6ab0ff",
         "mode": MODE_LISTEN,
         "label": "Command",
     },
     STATE_ERROR: {
-        "dot": "#ff9f0a",
-        "bar": "#ff9f0a",
         "mode": MODE_IDLE,
         "label": "Error",
     },
@@ -224,12 +245,13 @@ class Overlay(QWidget):
         layout.addWidget(self._viz, stretch=1)
 
         self._label = QLabel("", self)
+        self._palette = PALETTES[theme.effective_scheme()]
         self._label_style = (
             " font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Inter', 'SF Pro Text', sans-serif;"
             " font-size: 12px; letter-spacing: 0.2px;"
             " background: transparent;"
         )
-        self._label.setStyleSheet("color: rgba(255,255,255,210);" + self._label_style)
+        self._set_label_color(self._palette["label"])
         self._label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -275,11 +297,12 @@ class Overlay(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
 
         sp = SHADOW_PADDING
+        pal = self._palette
 
         # Shadow: concentric rounded rects, faint → strong as we approach the pill.
         # Stepping by 2 gives smooth enough falloff for a 22px padding.
         for i in range(sp, 0, -2):
-            alpha = max(2, int(62 - i * 2.6))
+            alpha = max(2, int((62 - i * 2.6) * pal["shadow"]))
             painter.setBrush(QColor(0, 0, 0, alpha))
             shadow_rect = QRectF(
                 sp - i,
@@ -295,12 +318,12 @@ class Overlay(QWidget):
 
         # Pill fill
         pill_rect = QRectF(sp, sp, OVERLAY_W, OVERLAY_H)
-        painter.setBrush(BG_COLOR)
+        painter.setBrush(pal["bg"])
         painter.drawRoundedRect(pill_rect, CORNER_RADIUS, CORNER_RADIUS)
 
         # Hairline border
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(BORDER_COLOR)
+        pen = QPen(pal["border"])
         pen.setWidthF(1.0)
         painter.setPen(pen)
         border_rect = QRectF(sp + 0.5, sp + 0.5, OVERLAY_W - 1, OVERLAY_H - 1)
@@ -392,6 +415,9 @@ class Overlay(QWidget):
 
     # --- State transitions ---------------------------------------------
 
+    def _set_label_color(self, color: str):
+        self._label.setStyleSheet(f"color: {color};" + self._label_style)
+
     def _apply_state(self, state: str, label_override: str | None = None):
         meta = STATE_META.get(state)
         if meta is None:
@@ -399,13 +425,18 @@ class Overlay(QWidget):
         self._hide_timer.stop()
         self._state = state
 
-        self._dot.set_color(meta["dot"])
-        self._viz.set_color(meta["bar"])
+        # Re-resolve on every state change so settings and desktop
+        # light/dark switches apply without a restart.
+        self._palette = PALETTES[theme.effective_scheme()]
+        dot, bar = self._palette["states"][state]
+        self._dot.set_color(dot)
+        self._viz.set_color(bar)
         self._viz.set_mode(meta["mode"])
-        self._label.setStyleSheet("color: rgba(255,255,255,210);" + self._label_style)
+        self._set_label_color(self._palette["label"])
         self._label.setText(
             label_override if label_override is not None else meta["label"]
         )
+        self.update()
 
         if not self.isVisible() or self._opacity.opacity() < 0.5:
             self._start_show()
@@ -441,6 +472,6 @@ class Overlay(QWidget):
 
     @pyqtSlot(str)
     def _on_notice(self, msg: str):
-        self._dot.set_color(STATE_META[STATE_ERROR]["dot"])
-        self._label.setStyleSheet("color: #ff453a;" + self._label_style)
+        self._dot.set_color(self._palette["states"][STATE_ERROR][0])
+        self._set_label_color(self._palette["notice"])
         self._label.setText(msg)
