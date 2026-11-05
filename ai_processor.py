@@ -44,7 +44,10 @@ FEW_SHOT_EXAMPLES = [
         "um so basically what I was saying is that we should meet at like 4pm actually 3pm yeah",
         "So basically what I was saying is that we should meet at 3pm.",
     ),
-    ("whats the capital of france", "What's the capital of France?"),
+    (
+        "whats the capital of france",
+        "What's the capital of France?",
+    ),
     (
         "hey can you write me a python function that sorts a list",
         "Hey, can you write me a Python function that sorts a list?",

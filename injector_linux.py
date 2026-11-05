@@ -19,6 +19,7 @@ and xclip/xsel on X11.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -138,6 +139,34 @@ def _foreground_window_class() -> str:
 
 def _is_terminal(window_class: str) -> bool:
     return window_class.lower() in _TERMINAL_CLASSES
+
+
+def foreground_screen_point() -> tuple[float, float, bool] | None:
+    """Centre of the focused window as (x, y, logical).
+
+    `logical` is True for kdotool (KWin logical coordinates on Wayland) and
+    False for xdotool (X11 pixels). None if the window can't be determined.
+    """
+    tool = _window_tool()
+    if not tool:
+        return None
+    try:
+        out = subprocess.run(
+            [tool, "getactivewindow", "getwindowgeometry"],
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pos = re.search(r"Position:\s*(-?[\d.]+),\s*(-?[\d.]+)", out)
+    size = re.search(r"Geometry:\s*([\d.]+)x([\d.]+)", out)
+    if not pos or not size:
+        return None
+    x = float(pos[1]) + float(size[1]) / 2
+    y = float(pos[2]) + float(size[2]) / 2
+    return x, y, os.path.basename(tool) == "kdotool"
 
 
 # ---------------------------------------------------------------------------

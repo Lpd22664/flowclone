@@ -32,6 +32,7 @@ import sys
 from PyQt6.QtCore import (
     QEasingCurve,
     QPoint,
+    QPointF,
     QPropertyAnimation,
     QRectF,
     Qt,
@@ -39,7 +40,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPen
+from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPen, QScreen
 from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -50,6 +51,35 @@ from PyQt6.QtWidgets import (
 import debug_log
 import theme
 from visualiser import BarVisualiser, MODE_DONE, MODE_IDLE, MODE_LISTEN, MODE_PROCESS
+
+if sys.platform == "win32":
+    from injector import foreground_screen_point
+else:
+    from injector_linux import foreground_screen_point
+
+
+def _active_screen() -> QScreen | None:
+    """The screen showing the focused window, or None if unknown."""
+    point = foreground_screen_point()
+    if point is None:
+        return None
+    x, y, logical = point
+    wayland_qpa = QGuiApplication.platformName().startswith("wayland")
+    for screen in QGuiApplication.screens():
+        geo = screen.geometry()
+        if wayland_qpa:
+            # Native Wayland Qt: geometry is in compositor-logical coordinates.
+            rect, p = QRectF(geo), QPointF(x, y)
+        else:
+            # Windows / X11 (incl. XWayland): a screen's top-left is in device
+            # pixels, its size in device-independent pixels.
+            dpr = screen.devicePixelRatio()
+            scale = dpr if logical else 1.0
+            rect = QRectF(geo.x(), geo.y(), geo.width() * dpr, geo.height() * dpr)
+            p = QPointF(x * scale, y * scale)
+        if rect.contains(p):
+            return screen
+    return None
 
 
 # --- Native topmost (Windows only) --------------------------------------
@@ -336,7 +366,7 @@ class Overlay(QWidget):
     # --- Positioning ----------------------------------------------------
 
     def _compute_position(self):
-        screen = QGuiApplication.primaryScreen()
+        screen = _active_screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return
         geo = screen.availableGeometry()
