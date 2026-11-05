@@ -553,12 +553,58 @@ class SettingsDialog(QDialog):
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(12)
 
+        def add_section(title: str, divider: bool = True) -> list[QWidget]:
+            """Add a section heading (preceded by a divider) to the form."""
+            widgets: list[QWidget] = []
+            if divider:
+                line = QFrame(self)
+                line.setObjectName("divider")
+                form.addRow(line)
+                widgets.append(line)
+            heading = QLabel(title, self)
+            heading.setObjectName("section")
+            form.addRow(heading)
+            widgets.append(heading)
+            return widgets
+
+        # --- Transcription ---
+        add_section("Transcription", divider=False)
+
         self._provider = QComboBox()
         for pid in TRANSCRIPTION_PROVIDERS:
             self._provider.addItem(PROVIDER_SPEC[pid]["display"], pid)
         self._provider.setCurrentIndex(max(0, self._provider.findData(config.provider)))
         self._provider.currentIndexChanged.connect(self._update_provider_rows)
-        form.addRow("Transcription provider", self._provider)
+        form.addRow("Provider", self._provider)
+
+        self._language = QComboBox()
+        for code, label in LANGUAGES:
+            self._language.addItem(label, code)
+        current_lang = config.get("language", "en")
+        idx = next((i for i, (c, _) in enumerate(LANGUAGES) if c == current_lang), 0)
+        self._language.setCurrentIndex(idx)
+        form.addRow("Language", self._language)
+
+        self._whisper_model = ModelPicker(
+            whispercpp,
+            config.get("whisper_model", "base"),
+            _describe_whisper_model,
+            self,
+        )
+        form.addRow("whisper.cpp model", self._whisper_model)
+
+        self._dictionary = QPlainTextEdit()
+        self._dictionary.setPlaceholderText("One term per line (proper nouns, jargon…)")
+        self._dictionary.setPlainText("\n".join(config.dictionary_words()))
+        self._dictionary.setMinimumHeight(110)
+        form.addRow("Custom dictionary", self._dictionary)
+
+        # --- AI processing ---
+        add_section("AI processing")
+
+        self._ai = QCheckBox("Enable AI cleanup")
+        self._ai.setChecked(bool(config.get("ai_cleanup_enabled", True)))
+        form.addRow("", self._ai)
 
         self._ai_provider = QComboBox()
         for pid in AI_PROVIDERS:
@@ -567,7 +613,7 @@ class SettingsDialog(QDialog):
             max(0, self._ai_provider.findData(config.ai_provider))
         )
         self._ai_provider.currentIndexChanged.connect(self._update_provider_rows)
-        form.addRow("AI processing provider", self._ai_provider)
+        form.addRow("Provider", self._ai_provider)
 
         self._local_llm_url = QLineEdit(config.get("local_llm_url", ""))
         self._local_llm_url.setPlaceholderText("http://localhost:11434/v1")
@@ -580,6 +626,14 @@ class SettingsDialog(QDialog):
         self._local_llm_model.setPlaceholderText("llama3.2")
         form.addRow("Custom LLM model", self._local_llm_model)
 
+        self._llama_model = ModelPicker(
+            llamacpp, config.get("llama_model", ""), parent=self
+        )
+        form.addRow("llama.cpp model", self._llama_model)
+
+        # --- API keys (only rows for selected providers are shown) ---
+        self._api_keys_section = add_section("API keys")
+
         self._openai_key = QLineEdit(config.api_key_for(PROVIDER_OPENAI))
         self._openai_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._openai_key.setPlaceholderText("sk-…")
@@ -589,16 +643,9 @@ class SettingsDialog(QDialog):
         self._groq_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._groq_key.setPlaceholderText("gsk_…  (free from console.groq.com)")
         form.addRow("Groq API key", self._groq_key)
-        self._form = form
-        self._update_provider_rows()
 
-        self._language = QComboBox()
-        for code, label in LANGUAGES:
-            self._language.addItem(label, code)
-        current_lang = config.get("language", "en")
-        idx = next((i for i, (c, _) in enumerate(LANGUAGES) if c == current_lang), 0)
-        self._language.setCurrentIndex(idx)
-        form.addRow("Transcription language", self._language)
+        # --- Audio ---
+        add_section("Audio")
 
         self._mic = QComboBox()
         # Long device names would otherwise stretch the whole dialog.
@@ -621,6 +668,9 @@ class SettingsDialog(QDialog):
         self._mic.currentTextChanged.connect(self._mic.setToolTip)
         form.addRow("Microphone", self._mic)
 
+        # --- Inputs ---
+        add_section("Inputs")
+
         self._ptt = HotkeyCapture(config.get("push_to_talk_hotkey", "right alt"))
         self._ptt.captured.connect(self._ptt.set_value)
         self._ptt.captured.connect(lambda _: self._ptt._btn.setEnabled(True))
@@ -638,9 +688,19 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Settings hotkey", self._settings_hk)
 
-        self._ai = QCheckBox("Enable AI cleanup")
-        self._ai.setChecked(bool(config.get("ai_cleanup_enabled", True)))
-        form.addRow("", self._ai)
+        # --- General ---
+        add_section("General")
+
+        self._color_scheme = QComboBox()
+        for value, label in theme.SCHEMES:
+            self._color_scheme.addItem(label, value)
+        self._color_scheme.setCurrentIndex(
+            max(0, self._color_scheme.findData(config.get("color_scheme")))
+        )
+        self._color_scheme.currentIndexChanged.connect(
+            lambda: self._apply_color_scheme(self._color_scheme.currentData())
+        )
+        form.addRow("Color scheme", self._color_scheme)
 
         if sys.platform == "win32":
             self._autostart = QCheckBox("Start FlowClone when Windows starts")
@@ -674,50 +734,8 @@ class SettingsDialog(QDialog):
             desktop_entry_row.addStretch()
             form.addRow("", desktop_entry_row)
 
-        self._color_scheme = QComboBox()
-        for value, label in theme.SCHEMES:
-            self._color_scheme.addItem(label, value)
-        self._color_scheme.setCurrentIndex(
-            max(0, self._color_scheme.findData(config.get("color_scheme")))
-        )
-        self._color_scheme.currentIndexChanged.connect(
-            lambda: self._apply_color_scheme(self._color_scheme.currentData())
-        )
-        form.addRow("Color scheme", self._color_scheme)
-
-        self._dictionary = QPlainTextEdit()
-        self._dictionary.setPlaceholderText("One term per line (proper nouns, jargon…)")
-        self._dictionary.setPlainText("\n".join(config.dictionary_words()))
-        self._dictionary.setMinimumHeight(110)
-        form.addRow("Custom dictionary", self._dictionary)
-
-        local_divider = QFrame(self)
-        local_divider.setObjectName("divider")
-        form.addRow(local_divider)
-        local_heading = QLabel("Local transcription (whisper.cpp)", self)
-        local_heading.setObjectName("section")
-        form.addRow(local_heading)
-
-        self._whisper_model = ModelPicker(
-            whispercpp,
-            config.get("whisper_model", "base"),
-            _describe_whisper_model,
-            self,
-        )
-        form.addRow("Model", self._whisper_model)
-
-        llama_divider = QFrame(self)
-        llama_divider.setObjectName("divider")
-        form.addRow(llama_divider)
-        llama_heading = QLabel("Local AI processing (llama.cpp)", self)
-        llama_heading.setObjectName("section")
-        form.addRow(llama_heading)
-
-        self._llama_model = ModelPicker(
-            llamacpp, config.get("llama_model", ""), parent=self
-        )
-        form.addRow("Model", self._llama_model)
-
+        self._form = form
+        self._update_provider_rows()
         root.addLayout(form)
 
         if sys.platform == "win32":
@@ -760,6 +778,9 @@ class SettingsDialog(QDialog):
         self._form.setRowVisible(self._local_llm_model, local_llm)
         self._form.setRowVisible(self._openai_key, PROVIDER_OPENAI in selected)
         self._form.setRowVisible(self._groq_key, PROVIDER_GROQ in selected)
+        needs_key = bool({PROVIDER_OPENAI, PROVIDER_GROQ} & selected)
+        for widget in self._api_keys_section:
+            self._form.setRowVisible(widget, needs_key)
         if self.isVisible():
             self.adjustSize()  # shrink when rows get hidden
 
