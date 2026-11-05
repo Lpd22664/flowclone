@@ -87,6 +87,8 @@ cd flowclone
 uv run main.py        # or: pip install -r requirements.txt && python main.py
 ```
 
+To start FlowClone from your desktop's app menu, click **Add FlowClone to app menu** in Settings (or run `uv run scripts/install_desktop_file.py`). It writes `~/.local/share/applications/flowclone.desktop` (pointing at this checkout) and a matching icon.
+
 On Wayland the Qt UI runs through XWayland (`QT_QPA_PLATFORM=xcb`) so the overlay can position itself and stay on top; override by setting `QT_QPA_PLATFORM` yourself. The tray icon uses Qt's `QSystemTrayIcon`. Press `Ctrl+C` in the terminal to quit cleanly.
 
 ### Pick providers

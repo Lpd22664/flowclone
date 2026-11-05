@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 import autostart
+import desktop_entry
 import llamacpp
 import theme
 import whispercpp
@@ -660,6 +661,19 @@ class SettingsDialog(QDialog):
             self._autostart.setToolTip(no_autostart_tip)
         form.addRow("", self._autostart)
 
+        if sys.platform != "win32":
+            self._desktop_entry_btn = QPushButton(self)
+            self._desktop_entry_btn.setToolTip(
+                f"Writes {desktop_entry.DESKTOP_FILE} so FlowClone shows up "
+                "in your desktop's app menu."
+            )
+            self._desktop_entry_btn.clicked.connect(self._on_desktop_entry_clicked)
+            self._update_desktop_entry_btn()
+            desktop_entry_row = QHBoxLayout()
+            desktop_entry_row.addWidget(self._desktop_entry_btn)
+            desktop_entry_row.addStretch()
+            form.addRow("", desktop_entry_row)
+
         self._color_scheme = QComboBox()
         for value, label in theme.SCHEMES:
             self._color_scheme.addItem(label, value)
@@ -748,6 +762,28 @@ class SettingsDialog(QDialog):
         self._form.setRowVisible(self._groq_key, PROVIDER_GROQ in selected)
         if self.isVisible():
             self.adjustSize()  # shrink when rows get hidden
+
+    def _update_desktop_entry_btn(self):
+        self._desktop_entry_btn.setText(
+            "Update app menu entry"
+            if desktop_entry.is_installed()
+            else "Add FlowClone to app menu"
+        )
+
+    def _on_desktop_entry_clicked(self):
+        try:
+            desktop_entry.install()
+        except (OSError, RuntimeError) as e:
+            QMessageBox.critical(
+                self, "FlowClone", f"Failed to add app menu entry: {e}"
+            )
+            return
+        self._update_desktop_entry_btn()
+        QMessageBox.information(
+            self,
+            "FlowClone",
+            f"Added FlowClone to the app menu:\n{desktop_entry.DESKTOP_FILE}",
+        )
 
     def done(self, result: int):
         # Closing the dialog aborts running downloads; partial files are
