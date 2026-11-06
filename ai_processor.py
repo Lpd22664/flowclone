@@ -21,7 +21,9 @@ Rules:
 - Return ONLY the cleaned text. No preamble, no quotes, no explanation, no commentary.
 - Always return the text in the same language that it was given to you in.
 
-If the input is empty or incoherent, return an empty string."""
+If the input is empty or incoherent, return an empty string.
+
+LANGUAGE: The output MUST be in the same language as the input. Never translate. German input gives German output, French input gives French output, and so on."""
 
 # Few-shot exemplars. They anchor the model on the cleanup pattern and, crucially,
 # include cases that would normally tempt a chatty model to answer (questions,
@@ -48,6 +50,16 @@ FEW_SHOT_EXAMPLES = [
         "The three things we need to do are:\n1. Finalise the deck\n2. Email the client\n3. Book the room",
     ),
     ("what is 27 times 43", "What is 27 times 43?"),
+    # Non-English examples: with only English ones, small local models
+    # (e.g. llama3.2 3B) translate German input to English.
+    (
+        "ähm also ich wollte nur kurz sagen dass das meeting äh auf morgen verschoben wird",
+        "Ich wollte nur kurz sagen, dass das Meeting auf morgen verschoben wird.",
+    ),
+    (
+        "kannst du mir bitte die datei schicken",
+        "Kannst du mir bitte die Datei schicken?",
+    ),
 ]
 
 COMMAND_SYSTEM_PROMPT = (
