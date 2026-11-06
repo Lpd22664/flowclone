@@ -4,6 +4,7 @@
     "push_to_talk_hotkey": "scrolllock",
     "command_mode_hotkey": "ctrl+shift+space",
     "settings_hotkey": "ctrl+shift+scrolllock",
+    "selection_transform_hotkey": "shift+ctrl+q",
     "ai_cleanup_enabled": true,
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,

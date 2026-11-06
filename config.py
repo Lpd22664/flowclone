@@ -94,6 +94,7 @@ DEFAULTS = {
     "push_to_talk_hotkey": "right alt",
     "command_mode_hotkey": "ctrl+shift+space",
     "settings_hotkey": "ctrl+shift+f",
+    "selection_transform_hotkey": "ctrl+shift+y",  # press-and-hold
     "ai_cleanup_enabled": True,
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,

@@ -232,6 +232,8 @@ class Overlay(QWidget):
     show_processing_signal = pyqtSignal(str)  # stage label, e.g. "Transcribing"
     show_done_signal = pyqtSignal()
     show_command_signal = pyqtSignal()
+    show_transform_signal = pyqtSignal()  # listening for a Selection Transform
+    show_toast_signal = pyqtSignal(str)  # success message, e.g. "Copied"
     show_error_signal = pyqtSignal(str)
     hide_signal = pyqtSignal()
     amplitude_signal = pyqtSignal(float)
@@ -271,7 +273,8 @@ class Overlay(QWidget):
         layout.addWidget(self._dot, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self._viz = BarVisualiser(self)
-        self._viz.setMinimumWidth(140)
+        # 16 bars need 108px; the rest is left for labels like "Applying Prompt".
+        self._viz.setMinimumWidth(112)
         layout.addWidget(self._viz, stretch=1)
 
         self._label = QLabel("", self)
@@ -314,6 +317,8 @@ class Overlay(QWidget):
         self.show_processing_signal.connect(self._on_processing)
         self.show_done_signal.connect(self._on_done)
         self.show_command_signal.connect(self._on_command)
+        self.show_transform_signal.connect(self._on_transform)
+        self.show_toast_signal.connect(self._on_toast)
         self.show_error_signal.connect(self._on_error)
         self.hide_signal.connect(self._start_fade_out)
         self.amplitude_signal.connect(self._on_amplitude)
@@ -487,6 +492,15 @@ class Overlay(QWidget):
     @pyqtSlot()
     def _on_command(self):
         self._apply_state(STATE_COMMAND)
+
+    @pyqtSlot()
+    def _on_transform(self):
+        self._apply_state(STATE_COMMAND, label_override="Transform")
+
+    @pyqtSlot(str)
+    def _on_toast(self, msg: str):
+        self._apply_state(STATE_DONE, label_override=msg)
+        self._hide_timer.start(2500)
 
     @pyqtSlot(str)
     def _on_error(self, msg: str):

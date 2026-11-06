@@ -23,6 +23,7 @@ from ai_processor import cleanup, AIError
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
 import llamacpp
+import selection_transform
 import transcript_log
 import whispercpp
 
@@ -55,6 +56,9 @@ class App(QObject):
         )
         self._ptt_thread: threading.Thread | None = None
         self._ptt_active = False
+        # Which hold-to-record hotkey owns the recorder: "dictation" or
+        # "transform" (Selection Transform).
+        self._ptt_mode: str | None = None
         self._ptt_lock = threading.Lock()
 
         self.command = CommandModeController(
@@ -66,6 +70,8 @@ class App(QObject):
             on_ptt_release=self._on_ptt_release,
             on_command_toggle=self.command.toggle,
             on_settings=self._request_open_settings,
+            on_transform_press=self._on_transform_press,
+            on_transform_release=self._on_transform_release,
         )
 
         self.tray = Tray(
@@ -138,6 +144,7 @@ class App(QObject):
             ptt=config.get("push_to_talk_hotkey", "right alt"),
             command=config.get("command_mode_hotkey", "ctrl+shift+space"),
             settings=config.get("settings_hotkey", "ctrl+shift+f"),
+            transform=config.get("selection_transform_hotkey", ""),
         )
 
     def _quit(self):
@@ -155,46 +162,82 @@ class App(QObject):
 
     # --- Push-to-talk pipeline ------------------------------------------
 
-    def _on_ptt_press(self):
-        """Keyboard thread. Start recording, flash overlay."""
-        if config.missing_api_key:
-            self.overlay.show_error_signal.emit("No API key — open Settings")
-            return
+    def _start_recording(self, mode: str) -> bool:
+        """Keyboard thread. Start the shared recorder unless it's busy."""
         with self._ptt_lock:
             if self._ptt_active:
-                return
+                return False
             try:
                 self.recorder.start()
             except MicNotFoundError:
                 self.overlay.show_error_signal.emit("No microphone detected")
-                return
+                return False
             except Exception as e:
                 self.overlay.show_error_signal.emit(str(e))
-                return
+                return False
             self._ptt_active = True
-        self.overlay.show_recording_signal.emit()
+            self._ptt_mode = mode
+        return True
 
-    def _on_ptt_release(self):
-        """Keyboard thread. Stop recording, spawn worker to transcribe/process/inject."""
+    def _stop_recording(self, mode: str) -> bytes | None:
+        """Keyboard thread. Stop a recording started for `mode`; returns the
+        WAV, or None if there's nothing (long enough) to process."""
         with self._ptt_lock:
-            if not self._ptt_active:
-                return
+            if not self._ptt_active or self._ptt_mode != mode:
+                return None
             self._ptt_active = False
+            self._ptt_mode = None
 
         try:
             wav_bytes, duration = self.recorder.stop()
         except Exception as e:
             self.overlay.show_error_signal.emit(str(e))
-            return
+            return None
 
         min_dur = float(config.get("min_recording_seconds", 0.5))
         if duration < min_dur or not wav_bytes:
             self.overlay.hide_signal.emit()
+            return None
+        return wav_bytes
+
+    def _on_ptt_press(self):
+        """Keyboard thread. Start recording, flash overlay."""
+        if config.missing_api_key:
+            self.overlay.show_error_signal.emit("No API key — open Settings")
+            return
+        if self._start_recording("dictation"):
+            self.overlay.show_recording_signal.emit()
+
+    def _on_ptt_release(self):
+        """Keyboard thread. Stop recording, spawn worker to transcribe/process/inject."""
+        wav_bytes = self._stop_recording("dictation")
+        if wav_bytes is None:
             return
 
         self.overlay.show_processing_signal.emit("Transcribing")
         worker = threading.Thread(
             target=self._process_recording, args=(wav_bytes,), daemon=True
+        )
+        worker.start()
+
+    def _on_transform_press(self):
+        """Keyboard thread. Selection Transform: record the spoken instruction."""
+        if config.missing_transcription_key or config.missing_ai_key:
+            self.overlay.show_error_signal.emit("No API key — open Settings")
+            return
+        if self._start_recording("transform"):
+            self.overlay.show_transform_signal.emit()
+
+    def _on_transform_release(self):
+        wav_bytes = self._stop_recording("transform")
+        if wav_bytes is None:
+            return
+
+        self.overlay.show_processing_signal.emit("Transcribing")
+        worker = threading.Thread(
+            target=selection_transform.run,
+            args=(wav_bytes, self.overlay),
+            daemon=True,
         )
         worker.start()
 

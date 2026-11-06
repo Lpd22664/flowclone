@@ -20,6 +20,7 @@ from config import APP_DIR
 
 MODE_DICTATION = "dictation"
 MODE_COMMAND = "command"
+MODE_TRANSFORM = "transform"
 
 _FORMAT_VERSION = 1
 
@@ -44,10 +45,14 @@ class Entry:
     mode: str
     transcription: str
     ai_processed: str | None  # None when no AI processing happened
+    selected_text: str | None = None  # Selection Transform input
 
 
 def record(
-    transcription: str, ai_processed: str | None, mode: str = MODE_DICTATION
+    transcription: str,
+    ai_processed: str | None,
+    mode: str = MODE_DICTATION,
+    selected_text: str | None = None,
 ) -> Path | None:
     """Write one transcription to its own JSON file. Never raises."""
     now = datetime.now().astimezone()
@@ -57,6 +62,7 @@ def record(
         "mode": mode,
         "transcription": transcription,
         "ai_processed": ai_processed,
+        "selected_text": selected_text,
     }
     try:
         # Dictations are private: keep the folder and files user-only.
@@ -84,11 +90,13 @@ def _read(path: Path) -> Entry | None:
         if timestamp.tzinfo is None:
             timestamp = timestamp.astimezone()
         processed = data.get("ai_processed")
+        selected = data.get("selected_text")
         return Entry(
             timestamp=timestamp,
             mode=str(data.get("mode", MODE_DICTATION)),
             transcription=str(data.get("transcription", "")),
             ai_processed=None if processed is None else str(processed),
+            selected_text=None if selected is None else str(selected),
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None

@@ -10,10 +10,11 @@ An open-source voice-dictation tool for Windows and Linux in the spirit of Wispr
 
 - **Push-to-talk dictation** — hold `Right Alt`, speak, release. Whisper transcribes, an LLM cleans up filler words and punctuation, result is pasted at the cursor.
 - **Command Mode** — select text anywhere, press `Ctrl+Shift+Space`, say something like *"make this more formal"* or *"turn this into bullet points"*, and the selection is rewritten in place.
+- **Selection Transform** — select text, hold `Ctrl+Shift+Y` and speak an instruction (*"translate this to German"*). The transformed text is copied to your clipboard. With nothing selected, the spoken prompt alone generates the text.
 - **Glass overlay** — bottom-centre floating pill with a live audio visualiser, doesn't steal focus. Shows *Listening → Transcribing → AI processing → Done*.
 - **Mix and match providers** — pick the transcription provider (OpenAI, Groq, local whisper.cpp) and the AI processing provider (OpenAI, Groq, local LLM) independently.
 - **Fully offline mode** — transcribe with whisper.cpp and clean up with a local LLM; no API keys, no internet. Download whisper.cpp models from Settings and FlowClone runs and supervises a local `whisper-server` for you.
-- **Settings** — `Ctrl+Shift+F` (or right-click the tray icon). Includes microphone selection; all three hotkeys are configurable.
+- **Settings** — `Ctrl+Shift+F` (or right-click the tray icon). Includes microphone selection; all hotkeys are configurable.
 - **Light and dark themes** — follows your system's color scheme by default, or pick one in Settings. Applies to the overlay and settings window.
 
 ## Why FlowClone?
@@ -137,9 +138,10 @@ bin/llama-server -m model.gguf -ngl 99 --port 8080     # then use http://localho
 | --- | --- |
 | Push-to-talk dictation | Hold `Right Alt` |
 | Command Mode | `Ctrl + Shift + Space` |
+| Selection Transform | Hold `Ctrl + Shift + Y` |
 | Open Settings | `Ctrl + Shift + F` |
 
-All three are reconfigurable in Settings.
+All are reconfigurable in Settings.
 
 ## Privacy & Permissions
 
@@ -147,16 +149,16 @@ FlowClone runs entirely on your machine. No telemetry, no analytics, no usage re
 
 **What gets sent off your machine**
 - Your recorded audio → your transcription provider (OpenAI or Groq). With local whisper.cpp it goes to `whisper-server` on `127.0.0.1` only.
-- The raw transcript (and, in Command Mode, the selected text) → your AI processing provider (OpenAI, Groq, or the local LLM URL you entered).
+- The raw transcript (and, in Command Mode and Selection Transform, the selected text) → your AI processing provider (OpenAI, Groq, or the local LLM URL you entered).
 - Your API key → sent as a Bearer token with each request to that provider; stored locally in `.env`.
 
 Both cloud providers have their own data-retention policies — check them before using with sensitive content. As of writing, Groq states that API inputs/outputs are not used for training; OpenAI retains API audio for up to 30 days for abuse monitoring unless you're on a zero-retention plan.
 
 **System-level access FlowClone needs**
-- **Microphone** — recorded *only while* push-to-talk is held, or while Command Mode is listening. No always-on recording.
+- **Microphone** — recorded *only while* push-to-talk or the Selection Transform hotkey is held, or while Command Mode is listening. No always-on recording.
 - **Global keyboard hook** — so hotkeys work even when FlowClone isn't focused. On Windows this uses a standard low-level keyboard hook; on Linux it reads `/dev/input/event*` via evdev (without grabbing the devices). The hook receives all key events but FlowClone only reacts to its configured hotkeys; other keystrokes are not stored, logged, or transmitted.
 - **Synthetic keystrokes** — to paste. On Linux these go through a `/dev/uinput` virtual keyboard named `flowclone-virtual-keyboard`.
-- **Clipboard** — briefly written to (to insert text via Ctrl+V) and, in Command Mode, read from (via Ctrl+C to capture your selection). Original clipboard content is restored after each injection.
+- **Clipboard** — briefly written to (to insert text via Ctrl+V) and, in Command Mode, read from (via Ctrl+C to capture your selection). Original clipboard content is restored after each injection. Selection Transform also reads your selection via Ctrl+C, then deliberately leaves its result on the clipboard.
 
 **Files written on your machine**
 
@@ -226,6 +228,7 @@ flowclone/
 ├── elevation.py                Admin / UIPI detection and relaunch
 ├── autostart.py                Start at login (registry / XDG autostart)
 ├── command_mode.py             Command Mode pipeline
+├── selection_transform.py      Selection Transform pipeline (result → clipboard)
 ├── overlay.py                  Glass pill status widget (bottom-centre)
 ├── visualiser.py               Live 16-bar audio visualiser
 ├── tray.py                     System tray icon + menu (pystray / Qt)

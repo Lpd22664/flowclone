@@ -643,8 +643,10 @@ class LogsTab(QWidget):
         layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(8)
 
-        self._table = QTableWidget(0, 2, self)
-        self._table.setHorizontalHeaderLabels(["Transcription", "AI processed"])
+        self._table = QTableWidget(0, 3, self)
+        self._table.setHorizontalHeaderLabels(
+            ["Transcription", "AI processed", "Selected text"]
+        )
         self._table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
@@ -693,13 +695,16 @@ class LogsTab(QWidget):
             stamp = entry.timestamp.astimezone().strftime("%Y-%m-%d\n%H:%M:%S")
             if entry.mode == transcript_log.MODE_COMMAND:
                 stamp += "\nCommand"
+            elif entry.mode == transcript_log.MODE_TRANSFORM:
+                stamp += "\nTransform"
             self._table.setVerticalHeaderItem(row, QTableWidgetItem(stamp))
 
             raw = QTableWidgetItem(entry.transcription)
             processed = QTableWidgetItem(
                 entry.ai_processed if entry.ai_processed is not None else "—"
             )
-            for col, item in enumerate((raw, processed)):
+            selected = QTableWidgetItem(entry.selected_text or "—")
+            for col, item in enumerate((raw, processed, selected)):
                 item.setTextAlignment(top_left)
                 self._table.setItem(row, col, item)
 
@@ -893,6 +898,19 @@ class SettingsDialog(QDialog):
         self._cmd.captured.connect(lambda _: self._cmd._btn.setEnabled(True))
         form.addRow("Command Mode hotkey", self._cmd)
 
+        self._transform_hk = HotkeyCapture(
+            config.get("selection_transform_hotkey", "ctrl+shift+y")
+        )
+        self._transform_hk.captured.connect(self._transform_hk.set_value)
+        self._transform_hk.captured.connect(
+            lambda _: self._transform_hk._btn.setEnabled(True)
+        )
+        self._transform_hk.setToolTip(
+            "Select text, then hold this hotkey while speaking an instruction. "
+            "The transformed text is copied to the clipboard."
+        )
+        form.addRow("Selection Transform hotkey", self._transform_hk)
+
         self._settings_hk = HotkeyCapture(config.get("settings_hotkey", "ctrl+shift+f"))
         self._settings_hk.captured.connect(self._settings_hk.set_value)
         self._settings_hk.captured.connect(
@@ -1053,6 +1071,7 @@ class SettingsDialog(QDialog):
         ptt = self._ptt.value() or "right alt"
         cmd = self._cmd.value() or "ctrl+shift+space"
         settings_hk = self._settings_hk.value() or "ctrl+shift+f"
+        transform_hk = self._transform_hk.value() or "ctrl+shift+y"
         color_scheme = self._color_scheme.currentData() or theme.SCHEME_SYSTEM
         ai_enabled = self._ai.isChecked()
         dict_text = self._dictionary.toPlainText()
@@ -1073,6 +1092,7 @@ class SettingsDialog(QDialog):
             config.set("push_to_talk_hotkey", ptt)
             config.set("command_mode_hotkey", cmd)
             config.set("settings_hotkey", settings_hk)
+            config.set("selection_transform_hotkey", transform_hk)
             config.set("color_scheme", color_scheme)
             config.set("ai_cleanup_enabled", ai_enabled)
             config.save()

@@ -55,6 +55,13 @@ COMMAND_SYSTEM_PROMPT = (
     "Apply the command to the text and return ONLY the result, no explanation, no quotes, no preamble."
 )
 
+TRANSFORM_SYSTEM_PROMPT = (
+    "You transform text according to the user's spoken instruction. You will get the "
+    "selected TEXT and an INSTRUCTION. Apply the instruction to the text and return ONLY "
+    "the result: no explanation, no quotes, no preamble. If the text is empty, follow the "
+    "instruction on its own and return only the result."
+)
+
 
 class AIError(RuntimeError):
     pass
@@ -144,4 +151,16 @@ def apply_command(selected_text: str, voice_command: str) -> str:
             {"role": "user", "content": user_content},
         ],
         max_tokens=2000,
+    )
+
+
+def transform_selection(selected_text: str, instruction: str) -> str:
+    """Selection Transform: the spoken (cleaned-up) instruction is the prompt."""
+    user_content = f"TEXT:\n{selected_text}\n\nINSTRUCTION:\n{instruction}"
+    return _chat(
+        [
+            {"role": "system", "content": TRANSFORM_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        max_tokens=4000,
     )

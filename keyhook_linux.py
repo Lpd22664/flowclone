@@ -17,8 +17,10 @@ Public API mirrors keyhook.py, plus combo-hotkey helpers that replace
     register_key(code, on_press, on_release)  -> token
     unregister(token)
     add_hotkey(combo, callback)                -> token
+    add_hold_hotkey(combo, on_press, on_release) -> token
     remove_hotkey(token)
     read_hotkey()                              -> str (blocking)
+    wait_for_modifiers_released(timeout)       -> bool
     vk_for_name(name)                          -> evdev key code
     start() / stop() / is_installed()
 """
@@ -207,6 +209,19 @@ class _Combo:
         return all(any(c in pressed for c in part) for part in self.parts)
 
 
+class _HoldCombo(_Combo):
+    """Combo with press-and-hold semantics: on_press once all keys are down,
+    on_release as soon as any of them goes up."""
+
+    def __init__(self, parts: List[Tuple[int, ...]], on_press, on_release):
+        super().__init__(parts, on_press)
+        self.on_release = on_release
+        self.is_down = False
+
+    def involves(self, code: int) -> bool:
+        return any(code in part for part in self.parts)
+
+
 class _Capture:
     def __init__(self):
         self.order: List[int] = []
@@ -217,6 +232,7 @@ class _Capture:
 _handlers: Dict[int, _Handler] = {}
 _by_code: Dict[int, _Handler] = {}
 _combos: Dict[int, _Combo] = {}
+_hold_combos: Dict[int, _HoldCombo] = {}
 _captures: List[_Capture] = []
 _pressed: Set[int] = set()
 _state_lock = threading.Lock()
@@ -254,6 +270,11 @@ def _on_key(code: int, value: int):
                 if combo.matches(_pressed):
                     debug_log.log("keyhook.combo", code=code)
                     _dispatch(combo.callback)
+            for hold in _hold_combos.values():
+                if not hold.is_down and hold.matches(_pressed):
+                    hold.is_down = True
+                    debug_log.log("keyhook.hold_press", code=code)
+                    _dispatch(hold.callback)
         elif value == 0:
             for cap in list(_captures):
                 held = [c for c in cap.order if c in _pressed]
@@ -264,6 +285,11 @@ def _on_key(code: int, value: int):
                     cap.done.set()
                     _captures.remove(cap)
             _pressed.discard(code)
+            for hold in _hold_combos.values():
+                if hold.is_down and hold.involves(code):
+                    hold.is_down = False
+                    debug_log.log("keyhook.hold_release", code=code)
+                    _dispatch(hold.on_release)
             h = _by_code.get(code)
             if h is not None and h.is_down:
                 h.is_down = False
@@ -434,6 +460,39 @@ def add_hotkey(combo: str, callback: Callable[[], None]) -> int:
 def remove_hotkey(token: int) -> None:
     with _state_lock:
         _combos.pop(token, None)
+        _hold_combos.pop(token, None)
+
+
+def add_hold_hotkey(
+    combo: str,
+    on_press: Callable[[], None],
+    on_release: Callable[[], None],
+) -> int:
+    """Press-and-hold version of add_hotkey: `on_press` when exactly the keys
+    in `combo` are held, `on_release` when any of them is released. Remove
+    with remove_hotkey(). Raises ValueError for unknown keys."""
+    parts = _parse_combo(combo)
+    start()
+    token = next(_token_source)
+    with _state_lock:
+        _hold_combos[token] = _HoldCombo(parts, on_press, on_release)
+    debug_log.log("keyhook.add_hold_hotkey", combo=combo, token=token)
+    return token
+
+
+def wait_for_modifiers_released(timeout: float) -> bool:
+    """Block until no Ctrl/Shift/Alt/Super key is physically held, so that
+    synthetic shortcuts (e.g. Ctrl+C) aren't combined with them. Returns
+    False on timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with _state_lock:
+            held = any(c in _MODIFIER_CODE_TO_NAME for c in _pressed)
+        if not held:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
 
 
 def read_hotkey() -> str:
