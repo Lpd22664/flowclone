@@ -42,6 +42,7 @@ from config import (
     config,
     AI_PROVIDERS,
     PROVIDER_GROQ,
+    PROVIDER_LOCAL_LLAMA,
     PROVIDER_LOCAL_LLM,
     PROVIDER_OPENAI,
     PROVIDER_SPEC,
@@ -997,6 +998,10 @@ class SettingsDialog(QDialog):
         local_llm = PROVIDER_LOCAL_LLM in selected
         self._form.setRowVisible(self._local_llm_url, local_llm)
         self._form.setRowVisible(self._local_llm_model, local_llm)
+        self._form.setRowVisible(
+            self._llama_model,
+            self._ai_provider.currentData() == PROVIDER_LOCAL_LLAMA,
+        )
         self._form.setRowVisible(self._openai_key, PROVIDER_OPENAI in selected)
         self._form.setRowVisible(self._groq_key, PROVIDER_GROQ in selected)
         needs_key = bool({PROVIDER_OPENAI, PROVIDER_GROQ} & selected)
