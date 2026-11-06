@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import threading
 
+import transcript_log
 from config import config
 from audio import record_until_silence, MicNotFoundError
 from transcription import transcribe, TranscriptionError
@@ -99,8 +100,11 @@ class CommandModeController:
         try:
             result = apply_command(selected, command_text)
         except AIError as e:
+            transcript_log.record(command_text, None, transcript_log.MODE_COMMAND)
             overlay.show_error_signal.emit(f"AI failed: {e}")
             return
+
+        transcript_log.record(command_text, result, transcript_log.MODE_COMMAND)
 
         try:
             inject_text(result)

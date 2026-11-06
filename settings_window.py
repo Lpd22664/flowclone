@@ -9,18 +9,24 @@ from typing import Callable
 from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +35,7 @@ import autostart
 import desktop_entry
 import llamacpp
 import theme
+import transcript_log
 import whispercpp
 from audio import list_input_devices
 from config import (
@@ -170,6 +177,56 @@ QFrame#divider {
     min-height: 1px;
     border: none;
 }
+QTabWidget::pane {
+    border: none;
+    border-top: 1px solid #202126;
+}
+QTabBar::tab {
+    background: transparent;
+    color: #8a8a93;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 6px 14px;
+    font-size: 13px;
+}
+QTabBar::tab:selected {
+    color: #e6e6ea;
+    border-bottom: 2px solid #0a84ff;
+}
+QTabBar::tab:hover:!selected {
+    color: #e6e6ea;
+}
+QTableWidget {
+    background-color: #17181b;
+    alternate-background-color: #1b1c20;
+    color: #f1f1f4;
+    border: 1px solid #2a2b30;
+    border-radius: 8px;
+    gridline-color: #2a2b30;
+    selection-background-color: #0a84ff;
+    font-size: 13px;
+}
+QHeaderView {
+    background-color: #1d1e22;
+}
+QHeaderView::section {
+    background-color: #1d1e22;
+    color: #8a8a93;
+    border: none;
+    border-right: 1px solid #2a2b30;
+    border-bottom: 1px solid #2a2b30;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+QTableCornerButton::section {
+    background-color: #1d1e22;
+    border: none;
+}
+QPlainTextEdit#logCell {
+    border: none;
+    border-radius: 0;
+    padding: 0;
+}
 """
 
 
@@ -288,6 +345,57 @@ QFrame#divider {
     max-height: 1px;
     min-height: 1px;
     border: none;
+}
+QTabWidget::pane {
+    border: none;
+    border-top: 1px solid #e5e5ea;
+}
+QTabBar::tab {
+    background: transparent;
+    color: #6e6e73;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 6px 14px;
+    font-size: 13px;
+}
+QTabBar::tab:selected {
+    color: #1d1d1f;
+    border-bottom: 2px solid #007aff;
+}
+QTabBar::tab:hover:!selected {
+    color: #1d1d1f;
+}
+QTableWidget {
+    background-color: #ffffff;
+    alternate-background-color: #f7f7f9;
+    color: #1d1d1f;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    gridline-color: #e5e5ea;
+    selection-background-color: #007aff;
+    selection-color: #ffffff;
+    font-size: 13px;
+}
+QHeaderView {
+    background-color: #f0f0f2;
+}
+QHeaderView::section {
+    background-color: #f0f0f2;
+    color: #6e6e73;
+    border: none;
+    border-right: 1px solid #e5e5ea;
+    border-bottom: 1px solid #e5e5ea;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+QTableCornerButton::section {
+    background-color: #f0f0f2;
+    border: none;
+}
+QPlainTextEdit#logCell {
+    border: none;
+    border-radius: 0;
+    padding: 0;
 }
 """
 
@@ -505,6 +613,102 @@ class ModelPicker(QWidget):
         self._update_download_ui()
 
 
+class _SelectableTextDelegate(QStyledItemDelegate):
+    """Opens a read-only text box over a cell so parts of it can be selected."""
+
+    def createEditor(self, parent, option, index):
+        editor = QPlainTextEdit(parent)
+        editor.setObjectName("logCell")
+        editor.setReadOnly(True)
+        editor.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        return editor
+
+    def setEditorData(self, editor, index):
+        editor.setPlainText(index.data(Qt.ItemDataRole.DisplayRole) or "")
+
+    def setModelData(self, editor, model, index):
+        pass  # read-only
+
+
+class LogsTab(QWidget):
+    """Past transcriptions: raw text on the left, AI output on the right."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setSpacing(8)
+
+        self._table = QTableWidget(0, 2, self)
+        self._table.setHorizontalHeaderLabels(["Transcription", "AI processed"])
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self._table.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        # Date and time of each entry go in the row header.
+        vheader = self._table.verticalHeader()
+        vheader.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        vheader.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self._table.setWordWrap(True)
+        self._table.setAlternatingRowColors(True)
+        # Ctrl+C copies the current cell; double-clicking (or clicking a
+        # selected cell) opens it for selecting part of the text.
+        self._table.setItemDelegate(_SelectableTextDelegate(self._table))
+        self._table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self._table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._table.setMinimumHeight(240)
+        layout.addWidget(self._table, stretch=1)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        self._status = QLabel("", self)
+        self._status.setObjectName("footnote")
+        self._status.setWordWrap(True)
+        self._status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        refresh_btn = QPushButton("Refresh", self)
+        refresh_btn.clicked.connect(self.reload)
+        footer.addWidget(self._status, stretch=1)
+        footer.addWidget(refresh_btn)
+        layout.addLayout(footer)
+
+    def reload(self):
+        entries = transcript_log.load_entries()
+        self._table.setRowCount(len(entries))
+        top_left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        for row, entry in enumerate(entries):
+            stamp = entry.timestamp.astimezone().strftime("%Y-%m-%d\n%H:%M:%S")
+            if entry.mode == transcript_log.MODE_COMMAND:
+                stamp += "\nCommand"
+            self._table.setVerticalHeaderItem(row, QTableWidgetItem(stamp))
+
+            raw = QTableWidgetItem(entry.transcription)
+            processed = QTableWidgetItem(
+                entry.ai_processed if entry.ai_processed is not None else "—"
+            )
+            for col, item in enumerate((raw, processed)):
+                item.setTextAlignment(top_left)
+                self._table.setItem(row, col, item)
+
+        count = f"{len(entries)} transcription{'s' if len(entries) != 1 else ''}"
+        self._status.setText(
+            f"{count} · stored in {transcript_log.LOG_DIR}\n"
+            "Double-click a cell to select text; Ctrl+C copies the selected cell."
+        )
+
+
 def _describe_whisper_model(name: str) -> list[str]:
     info = whispercpp.MODELS[name]
     parts = ["English" if info.english_only else "Multilingual"]
@@ -531,6 +735,13 @@ class SettingsDialog(QDialog):
         heading.setObjectName("heading")
         root.addWidget(heading)
 
+        self._tabs = QTabWidget(self)
+        self._tabs.tabBar().setDrawBase(False)
+        settings_page = QWidget(self._tabs)
+        page = QVBoxLayout(settings_page)
+        page.setContentsMargins(0, 12, 0, 0)
+        page.setSpacing(16)
+
         subheading = QLabel(
             "API keys are stored locally in .env. Pick a provider — Groq is free "
             "(console.groq.com) and uses whisper-large-v3-turbo + llama-3.3-70b.",
@@ -538,11 +749,11 @@ class SettingsDialog(QDialog):
         )
         subheading.setObjectName("subheading")
         subheading.setWordWrap(True)
-        root.addWidget(subheading)
+        page.addWidget(subheading)
 
         divider = QFrame(self)
         divider.setObjectName("divider")
-        root.addWidget(divider)
+        page.addWidget(divider)
 
         form = QFormLayout()
         form.setLabelAlignment(
@@ -736,7 +947,7 @@ class SettingsDialog(QDialog):
 
         self._form = form
         self._update_provider_rows()
-        root.addLayout(form)
+        page.addLayout(form)
 
         if sys.platform == "win32":
             info_text = "Admin rights may be required for global hotkeys to reach elevated apps."
@@ -748,7 +959,13 @@ class SettingsDialog(QDialog):
         info = QLabel(info_text, self)
         info.setObjectName("footnote")
         info.setWordWrap(True)
-        root.addWidget(info)
+        page.addWidget(info)
+
+        self._logs = LogsTab(self._tabs)
+        self._tabs.addTab(settings_page, "Settings")
+        self._tabs.addTab(self._logs, "Logs")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        root.addWidget(self._tabs, stretch=1)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -762,6 +979,10 @@ class SettingsDialog(QDialog):
         buttons.addWidget(cancel_btn)
         buttons.addWidget(save_btn)
         root.addLayout(buttons)
+
+    def _on_tab_changed(self, index: int):
+        if self._tabs.widget(index) is self._logs:
+            self._logs.reload()
 
     # --- Color scheme ------------------------------------------------------
 

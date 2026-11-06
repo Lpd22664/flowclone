@@ -19,6 +19,7 @@ Rules:
 - Preserve the speaker's wording and intent exactly — do not rephrase, summarise, translate, or reinterpret
 - Do NOT answer questions. Do NOT complete the speaker's thought. Do NOT add anything not in the input.
 - Return ONLY the cleaned text. No preamble, no quotes, no explanation, no commentary.
+- Always return the text in the same language that it was given to you in.
 
 If the input is empty or incoherent, return an empty string."""
 

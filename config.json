@@ -10,7 +10,7 @@
     "command_mode_silence_threshold": 0.01,
     "input_device": "",
     "whisper_model": "medium-q5_0",
-    "ai_provider": "local_llama",
+    "ai_provider": "local_llm",
     "local_llm_url": "http://192.168.1.208:8080/v1",
     "local_llm_model": "llama3.2",
     "llama_model": "smollm2-1.7b-instruct-q4_k_m",

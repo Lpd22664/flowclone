@@ -23,6 +23,7 @@ from ai_processor import cleanup, AIError
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
 import llamacpp
+import transcript_log
 import whispercpp
 
 if sys.platform == "win32":
@@ -211,13 +212,17 @@ class App(QObject):
             self.overlay.hide_signal.emit()
             return
 
-        if config.get("ai_cleanup_enabled", True):
+        ai_enabled = bool(config.get("ai_cleanup_enabled", True))
+        if ai_enabled:
             self.overlay.show_processing_signal.emit("AI processing")
         try:
             cleaned = cleanup(raw)
         except AIError as e:
+            transcript_log.record(raw, None)
             self.overlay.show_error_signal.emit(f"AI failed: {e}")
             return
+
+        transcript_log.record(raw, cleaned if ai_enabled else None)
 
         if not cleaned.strip():
             self.overlay.hide_signal.emit()
