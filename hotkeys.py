@@ -15,15 +15,68 @@ threads so nothing heavy runs inside the LL-hook callback (Windows silently
 disables LL hooks whose callback exceeds LowLevelHooksTimeout, default
 300 ms, and sounddevice device enumeration can come close to that).
 """
+
 from __future__ import annotations
 
+import sys
 import threading
+import time
 from typing import Callable, Optional
 
-import keyboard
-
 import debug_log
-import keyhook
+
+if sys.platform == "win32":
+    import keyboard
+    import keyhook
+
+    _add_hotkey = keyboard.add_hotkey
+    _remove_hotkey = keyboard.remove_hotkey
+
+    def _read_hotkey() -> str:
+        return keyboard.read_hotkey(suppress=False)
+
+    def _add_hold_hotkey(
+        combo: str, on_press: Callable[[], None], on_release: Callable[[], None]
+    ):
+        """keyboard.add_hotkey only reports presses; poll for the release."""
+        lock = threading.Lock()
+        down = [False]
+
+        def watch_release():
+            while keyboard.is_pressed(combo):
+                time.sleep(0.02)
+            with lock:
+                down[0] = False
+            on_release()
+
+        def pressed():
+            with lock:
+                if down[0]:  # autorepeat
+                    return
+                down[0] = True
+            on_press()
+            threading.Thread(target=watch_release, daemon=True).start()
+
+        return keyboard.add_hotkey(combo, pressed)
+
+    def wait_for_modifiers_released(timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while any(keyboard.is_pressed(k) for k in ("ctrl", "shift", "alt")):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+        return True
+
+else:
+    # `keyboard` needs root on Linux; keyhook_linux reads evdev directly and
+    # provides both press-and-hold and combo hotkeys.
+    import keyhook_linux as keyhook
+
+    _add_hotkey = keyhook.add_hotkey
+    _remove_hotkey = keyhook.remove_hotkey
+    _read_hotkey = keyhook.read_hotkey
+    _add_hold_hotkey = keyhook.add_hold_hotkey
+    wait_for_modifiers_released = keyhook.wait_for_modifiers_released
 
 
 class HotkeyManager:
@@ -31,6 +84,8 @@ class HotkeyManager:
     Push-to-talk hotkey: fires on_ptt_press when held, on_ptt_release when released.
     Command mode hotkey: fires on_command_toggle on each press.
     Settings hotkey: fires on_settings on each press.
+    Selection Transform hotkey (may be a combo): fires on_transform_press when
+    held, on_transform_release when released.
     """
 
     def __init__(
@@ -39,11 +94,15 @@ class HotkeyManager:
         on_ptt_release: Callable[[], None],
         on_command_toggle: Callable[[], None],
         on_settings: Callable[[], None],
+        on_transform_press: Callable[[], None],
+        on_transform_release: Callable[[], None],
     ):
         self._on_ptt_press = on_ptt_press
         self._on_ptt_release = on_ptt_release
         self._on_command_toggle = on_command_toggle
         self._on_settings = on_settings
+        self._on_transform_press = on_transform_press
+        self._on_transform_release = on_transform_release
 
         self._ptt_hotkey: Optional[str] = None
         self._command_hotkey: Optional[str] = None
@@ -52,6 +111,7 @@ class HotkeyManager:
         self._ptt_token: Optional[int] = None
         self._command_hotkey_id = None
         self._settings_hotkey_id = None
+        self._transform_hotkey_id = None
 
         self._lock = threading.Lock()
 
@@ -65,16 +125,20 @@ class HotkeyManager:
                 pass
             self._ptt_token = None
 
-        for attr in ("_command_hotkey_id", "_settings_hotkey_id"):
+        for attr in (
+            "_command_hotkey_id",
+            "_settings_hotkey_id",
+            "_transform_hotkey_id",
+        ):
             hid = getattr(self, attr)
             if hid is not None:
                 try:
-                    keyboard.remove_hotkey(hid)
+                    _remove_hotkey(hid)
                 except Exception:
                     pass
             setattr(self, attr, None)
 
-    def apply(self, ptt: str, command: str, settings: str):
+    def apply(self, ptt: str, command: str, settings: str, transform: str):
         """(Re)register all hotkeys. Safe to call multiple times."""
         with self._lock:
             self._clear()
@@ -97,22 +161,36 @@ class HotkeyManager:
                 )
                 debug_log.log(
                     "hotkeys.ptt_registered",
-                    name=self._ptt_hotkey, vk=hex(vk), token=self._ptt_token,
+                    name=self._ptt_hotkey,
+                    vk=hex(vk),
+                    token=self._ptt_token,
                 )
 
             try:
-                self._command_hotkey_id = keyboard.add_hotkey(
-                    command, self._safe(self._on_command_toggle),
+                self._command_hotkey_id = _add_hotkey(
+                    command,
+                    self._safe(self._on_command_toggle),
                 )
             except Exception:
                 self._command_hotkey_id = None
 
             try:
-                self._settings_hotkey_id = keyboard.add_hotkey(
-                    settings, self._safe(self._on_settings),
+                self._settings_hotkey_id = _add_hotkey(
+                    settings,
+                    self._safe(self._on_settings),
                 )
             except Exception:
                 self._settings_hotkey_id = None
+
+            if (transform or "").strip():
+                try:
+                    self._transform_hotkey_id = _add_hold_hotkey(
+                        transform,
+                        self._safe(self._on_transform_press),
+                        self._safe(self._on_transform_release),
+                    )
+                except Exception:
+                    self._transform_hotkey_id = None
 
     @staticmethod
     def _safe(fn: Callable[[], None]) -> Callable[[], None]:
@@ -121,6 +199,7 @@ class HotkeyManager:
                 fn()
             except Exception:
                 pass
+
         return wrapper
 
     def shutdown(self):
@@ -141,4 +220,4 @@ class HotkeyManager:
         settings dialog, not sensitive to the cmd/terminal issue that affected
         push-to-talk detection.
         """
-        return keyboard.read_hotkey(suppress=False)
+        return _read_hotkey()

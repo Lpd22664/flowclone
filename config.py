@@ -10,6 +10,7 @@ Storage location:
     (so the installed EXE can write user settings without needing write access
     to Program Files, and the EXE itself stays stateless).
 """
+
 import json
 import os
 import re
@@ -33,23 +34,59 @@ def _app_dir() -> Path:
     """Return the directory where user data (keys, preferences) lives."""
     if getattr(sys, "frozen", False):
         appdata = os.environ.get("APPDATA")
-        base = (
-            Path(appdata) / "FlowClone"
-            if appdata
-            else Path.home() / ".flowclone"
-        )
+        base = Path(appdata) / "FlowClone" if appdata else Path.home() / ".flowclone"
         base.mkdir(parents=True, exist_ok=True)
         return base
     return Path(__file__).parent
 
 
+def _exe_dir() -> Path:
+    """Directory of the executable (frozen EXE) or of the source files."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _xdg_config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    return (Path(base) if base else Path.home() / ".config") / "flowclone"
+
+
+def _user_file(name: str) -> Path:
+    """Locate a user file such as config.json or dictionary.txt.
+
+    Next to the executable wins; on Linux the XDG config dir is tried next and
+    is also where a new file gets created if none exists yet.
+    """
+    candidates = [_exe_dir() / name]
+    if sys.platform.startswith("linux"):
+        candidates.append(_xdg_config_dir() / name)
+    for path in candidates:
+        if path.is_file():
+            return path
+    if sys.platform.startswith("linux"):
+        return candidates[-1]
+    return APP_DIR / name
+
+
 APP_DIR = _app_dir()
 ENV_PATH = APP_DIR / ".env"
-CONFIG_PATH = APP_DIR / "config.json"
-DICTIONARY_PATH = APP_DIR / "dictionary.txt"
+CONFIG_PATH = _user_file("config.json")
+DICTIONARY_PATH = _user_file("dictionary.txt")
 
 PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
+PROVIDER_LOCAL = "local"
+PROVIDER_LOCAL_LLM = "local_llm"
+PROVIDER_LOCAL_LLAMA = "local_llama"
+
+TRANSCRIPTION_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_GROQ, PROVIDER_LOCAL)
+AI_PROVIDERS = (
+    PROVIDER_OPENAI,
+    PROVIDER_GROQ,
+    PROVIDER_LOCAL_LLAMA,
+    PROVIDER_LOCAL_LLM,
+)
 
 DEFAULTS = {
     "provider": PROVIDER_OPENAI,
@@ -57,11 +94,20 @@ DEFAULTS = {
     "push_to_talk_hotkey": "right alt",
     "command_mode_hotkey": "ctrl+shift+space",
     "settings_hotkey": "ctrl+shift+f",
+    "selection_transform_hotkey": "ctrl+shift+y",  # press-and-hold
     "ai_cleanup_enabled": True,
-    "remove_filler_words": True,
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,
     "command_mode_silence_threshold": 0.01,
+    "input_device": "",  # label from audio.list_input_devices(); "" = system default
+    "whisper_model": "base",  # whisper.cpp model name, see whispercpp.MODELS
+    "ai_provider": "",  # "" = same as "provider" (older configs) if it has an LLM
+    # Any OpenAI-compatible chat endpoint (Ollama, llama.cpp server, LM Studio…)
+    "local_llm_url": "http://localhost:11434/v1",
+    "local_llm_model": "llama3.2",
+    "llama_model": "smollm2-1.7b-instruct-q4_k_m",  # see llamacpp.MODELS
+    "color_scheme": "system",  # "system", "dark" or "light"
+    "developer_mode": False,
 }
 
 # Per-provider model + endpoint config.
@@ -79,6 +125,33 @@ PROVIDER_SPEC = {
         "whisper_model": "whisper-large-v3-turbo",
         "chat_model": "llama-3.3-70b-versatile",
         "display": "Groq (free)",
+    },
+    # Offline transcription via bin/whisper-server; model comes from the
+    # "whisper_model" setting. Transcription only.
+    PROVIDER_LOCAL: {
+        "env_key": None,
+        "base_url": None,
+        "whisper_model": None,
+        "chat_model": None,
+        "display": "Local whisper.cpp",
+    },
+    # AI processing only; endpoint and model come from "local_llm_url" and
+    # "local_llm_model".
+    PROVIDER_LOCAL_LLM: {
+        "env_key": None,
+        "base_url": None,
+        "whisper_model": None,
+        "chat_model": None,
+        "display": "Custom LLM",
+    },
+    # AI processing only, via bin/llama-server started by FlowClone; model
+    # comes from the "llama_model" setting.
+    PROVIDER_LOCAL_LLAMA: {
+        "env_key": None,
+        "base_url": None,
+        "whisper_model": None,
+        "chat_model": None,
+        "display": "Local llama.cpp",
     },
 }
 
@@ -99,8 +172,14 @@ class Config:
                         self._data[k] = v
             except (json.JSONDecodeError, OSError):
                 pass
+        else:
+            try:
+                self.save()
+            except OSError:
+                pass
 
     def save(self):
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=4)
 
@@ -117,8 +196,15 @@ class Config:
 
     @property
     def provider(self) -> str:
+        """Transcription provider."""
         p = self._data.get("provider", PROVIDER_OPENAI)
-        return p if p in PROVIDER_SPEC else PROVIDER_OPENAI
+        return p if p in TRANSCRIPTION_PROVIDERS else PROVIDER_OPENAI
+
+    @property
+    def ai_provider(self) -> str:
+        """AI processing provider (cleanup + Command Mode)."""
+        p = self._data.get("ai_provider") or self._data.get("provider")
+        return p if p in AI_PROVIDERS else PROVIDER_OPENAI
 
     def _spec(self) -> dict:
         return PROVIDER_SPEC[self.provider]
@@ -126,7 +212,28 @@ class Config:
     @property
     def provider_api_key(self) -> str:
         """API key for the *currently selected* provider."""
-        return os.environ.get(self._spec()["env_key"], "").strip()
+        return self.api_key_for(self.provider)
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider == PROVIDER_LOCAL
+
+    @property
+    def missing_transcription_key(self) -> bool:
+        """True if the transcription provider needs an API key and none is set."""
+        return bool(self._spec()["env_key"]) and not self.provider_api_key
+
+    @property
+    def missing_ai_key(self) -> bool:
+        """True if the AI processing provider needs an API key and none is set."""
+        return bool(PROVIDER_SPEC[self.ai_provider]["env_key"]) and not self.ai_api_key
+
+    @property
+    def missing_api_key(self) -> bool:
+        """True if dictation (transcription + optional cleanup) lacks a key."""
+        return self.missing_transcription_key or (
+            bool(self.get("ai_cleanup_enabled", True)) and self.missing_ai_key
+        )
 
     @property
     def provider_base_url(self) -> str | None:
@@ -138,7 +245,25 @@ class Config:
 
     @property
     def chat_model(self) -> str:
-        return self._spec()["chat_model"]
+        if self.ai_provider == PROVIDER_LOCAL_LLM:
+            return str(self.get("local_llm_model", "")).strip()
+        if self.ai_provider == PROVIDER_LOCAL_LLAMA:
+            return str(self.get("llama_model", ""))
+        return PROVIDER_SPEC[self.ai_provider]["chat_model"]
+
+    @property
+    def ai_api_key(self) -> str:
+        return self.api_key_for(self.ai_provider)
+
+    @property
+    def ai_base_url(self) -> str | None:
+        if self.ai_provider == PROVIDER_LOCAL_LLM:
+            return str(self.get("local_llm_url", "")).strip() or None
+        return PROVIDER_SPEC[self.ai_provider]["base_url"]
+
+    @property
+    def ai_display_name(self) -> str:
+        return PROVIDER_SPEC[self.ai_provider]["display"]
 
     @property
     def provider_display_name(self) -> str:
@@ -147,14 +272,14 @@ class Config:
     def api_key_for(self, provider: str) -> str:
         """Read the stored key for a specific provider (regardless of which is active)."""
         spec = PROVIDER_SPEC.get(provider)
-        if spec is None:
+        if spec is None or not spec["env_key"]:
             return ""
         return os.environ.get(spec["env_key"], "").strip()
 
     def set_api_key_for(self, provider: str, key: str):
         """Persist a key to .env for a specific provider."""
         spec = PROVIDER_SPEC.get(provider)
-        if spec is None:
+        if spec is None or not spec["env_key"]:
             return
         if not ENV_PATH.exists():
             ENV_PATH.touch()
@@ -187,6 +312,7 @@ class Config:
             return out
 
     def save_dictionary(self, text: str):
+        DICTIONARY_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(DICTIONARY_PATH, "w", encoding="utf-8") as f:
             f.write(text)
 

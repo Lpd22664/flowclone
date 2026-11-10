@@ -1,12 +1,20 @@
 {
-    "provider": "groq",
-    "language": "en",
-    "push_to_talk_hotkey": "right alt",
+    "provider": "local",
+    "language": "auto",
+    "push_to_talk_hotkey": "scrolllock",
     "command_mode_hotkey": "ctrl+shift+space",
-    "settings_hotkey": "ctrl+shift+f",
+    "settings_hotkey": "ctrl+shift+scrolllock",
+    "selection_transform_hotkey": "shift+ctrl+q",
     "ai_cleanup_enabled": true,
-    "remove_filler_words": true,
     "min_recording_seconds": 0.5,
     "command_mode_silence_seconds": 1.5,
-    "command_mode_silence_threshold": 0.01
+    "command_mode_silence_threshold": 0.01,
+    "input_device": "",
+    "whisper_model": "medium-q5_0",
+    "ai_provider": "local_llm",
+    "local_llm_url": "http://192.168.1.208:8080/v1",
+    "local_llm_model": "llama3.2",
+    "llama_model": "smollm2-1.7b-instruct-q4_k_m",
+    "color_scheme": "system",
+    "developer_mode": true
 }

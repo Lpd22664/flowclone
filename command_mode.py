@@ -1,13 +1,20 @@
 """Command Mode: user selects text, presses hotkey, speaks a transform command."""
+
 from __future__ import annotations
 
+import sys
 import threading
 
+import transcript_log
 from config import config
 from audio import record_until_silence, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import apply_command, AIError
-from injector import copy_selection, inject_text, ElevationRequired
+
+if sys.platform == "win32":
+    from injector import copy_selection, inject_text, ElevationRequired
+else:
+    from injector_linux import copy_selection, inject_text, ElevationRequired
 
 
 class CommandModeController:
@@ -30,9 +37,6 @@ class CommandModeController:
                 if self._stop_event is not None:
                     self._stop_event.set()
                 return
-            if not config.api_key:
-                self._overlay.show_error_signal.emit("No API key — open Settings")
-                return
             self._stop_event = threading.Event()
             self._thread = threading.Thread(
                 target=self._run, args=(self._stop_event,), daemon=True
@@ -51,6 +55,8 @@ class CommandModeController:
             selected = ""
 
         overlay.show_command_signal.emit()
+        if config.missing_transcription_key or config.missing_ai_key:
+            overlay.notice_signal.emit("No API key")
 
         silence_s = float(config.get("command_mode_silence_seconds", 1.5))
         silence_t = float(config.get("command_mode_silence_threshold", 0.01))
@@ -61,6 +67,7 @@ class CommandModeController:
                 silence_threshold=silence_t,
                 stop_event=stop_event,
                 on_level=overlay.amplitude_signal.emit,
+                device=config.get("input_device") or None,
             )
         except MicNotFoundError:
             overlay.show_error_signal.emit("No microphone detected")
@@ -73,7 +80,11 @@ class CommandModeController:
             overlay.hide_signal.emit()
             return
 
-        overlay.show_processing_signal.emit()
+        if config.missing_transcription_key or config.missing_ai_key:
+            overlay.show_error_signal.emit("No API key — open Settings")
+            return
+
+        overlay.show_processing_signal.emit("Transcribing")
 
         try:
             command_text = transcribe(wav_bytes)
@@ -85,11 +96,15 @@ class CommandModeController:
             overlay.hide_signal.emit()
             return
 
+        overlay.show_processing_signal.emit("AI processing")
         try:
             result = apply_command(selected, command_text)
         except AIError as e:
+            transcript_log.record(command_text, None, transcript_log.MODE_COMMAND)
             overlay.show_error_signal.emit(f"AI failed: {e}")
             return
+
+        transcript_log.record(command_text, result, transcript_log.MODE_COMMAND)
 
         try:
             inject_text(result)

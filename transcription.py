@@ -1,14 +1,27 @@
 """Whisper API transcription."""
+
 import io
 import time
 
 from openai import OpenAI, APIConnectionError, APITimeoutError
 
 from config import config, scrub_secrets
+import whispercpp
 
 
 class TranscriptionError(RuntimeError):
     pass
+
+
+def _transcribe_local(wav_bytes: bytes) -> str:
+    model = config.get("whisper_model", "base")
+    try:
+        whispercpp.server.start(model)  # no-op if already running this model
+        return whispercpp.server.transcribe(
+            wav_bytes, config.get("language", "en"), config.whisper_prompt()
+        )
+    except whispercpp.WhisperServerError as e:
+        raise TranscriptionError(str(e)) from e
 
 
 def _client() -> OpenAI:
@@ -25,6 +38,8 @@ def transcribe(wav_bytes: bytes) -> str:
     """Send WAV bytes to Whisper, return raw transcript. Retries once on network errors."""
     if not wav_bytes:
         return ""
+    if config.is_local:
+        return _transcribe_local(wav_bytes)
 
     client = _client()
     language = config.get("language", "en")

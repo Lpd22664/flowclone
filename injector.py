@@ -15,6 +15,7 @@ Two paths:
 Console detection uses the window class of the foreground HWND. If detection
 fails for any reason, we fall back to clipboard paste — historical behaviour.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -74,12 +75,28 @@ _user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 _user32.GetClassNameW.restype = ctypes.c_int
 
 
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+_MONITOR_DEFAULTTONEAREST = 2
+_user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+_user32.MonitorFromWindow.restype = wintypes.HMONITOR
+_user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MONITORINFO)]
+_user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+
 # Window classes that indicate a console target.
 _CONSOLE_CLASSES = {
-    "ConsoleWindowClass",              # classic conhost: cmd.exe, powershell.exe
-    "CASCADIA_HOSTING_WINDOW_CLASS",   # Windows Terminal (older builds)
-    "WindowsTerminal",                 # Windows Terminal (newer builds)
-    "PseudoConsoleWindow",             # rare; some embedded conhost variants
+    "ConsoleWindowClass",  # classic conhost: cmd.exe, powershell.exe
+    "CASCADIA_HOSTING_WINDOW_CLASS",  # Windows Terminal (older builds)
+    "WindowsTerminal",  # Windows Terminal (newer builds)
+    "PseudoConsoleWindow",  # rare; some embedded conhost variants
 }
 
 
@@ -97,6 +114,21 @@ def _is_foreground_console() -> bool:
     return _foreground_window_class() in _CONSOLE_CLASSES
 
 
+def foreground_screen_point() -> tuple[float, float, bool] | None:
+    """Centre of the monitor showing the foreground window, in physical
+    pixels, as (x, y, logical=False). None if there is no foreground window."""
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    monitor = _user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+    info = _MONITORINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if not monitor or not _user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return None
+    r = info.rcMonitor
+    return (r.left + r.right) / 2, (r.top + r.bottom) / 2, False
+
+
 def _send_inputs(*inputs: _INPUT) -> int:
     """Returns the number of events actually inserted. On UIPI block
     (non-elevated process sending to elevated window) this is 0 with
@@ -110,16 +142,27 @@ def _send_inputs(*inputs: _INPUT) -> int:
 def _unicode_pair(code: int) -> tuple[_INPUT, _INPUT]:
     down = _INPUT(
         type=_INPUT_KEYBOARD,
-        ii=_INPUT_UNION(ki=_KEYBDINPUT(
-            wVk=0, wScan=code, dwFlags=_KEYEVENTF_UNICODE, time=0, dwExtraInfo=None,
-        )),
+        ii=_INPUT_UNION(
+            ki=_KEYBDINPUT(
+                wVk=0,
+                wScan=code,
+                dwFlags=_KEYEVENTF_UNICODE,
+                time=0,
+                dwExtraInfo=None,
+            )
+        ),
     )
     up = _INPUT(
         type=_INPUT_KEYBOARD,
-        ii=_INPUT_UNION(ki=_KEYBDINPUT(
-            wVk=0, wScan=code, dwFlags=_KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP,
-            time=0, dwExtraInfo=None,
-        )),
+        ii=_INPUT_UNION(
+            ki=_KEYBDINPUT(
+                wVk=0,
+                wScan=code,
+                dwFlags=_KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP,
+                time=0,
+                dwExtraInfo=None,
+            )
+        ),
     )
     return down, up
 
@@ -127,15 +170,27 @@ def _unicode_pair(code: int) -> tuple[_INPUT, _INPUT]:
 def _vk_pair(vk: int) -> tuple[_INPUT, _INPUT]:
     down = _INPUT(
         type=_INPUT_KEYBOARD,
-        ii=_INPUT_UNION(ki=_KEYBDINPUT(
-            wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=None,
-        )),
+        ii=_INPUT_UNION(
+            ki=_KEYBDINPUT(
+                wVk=vk,
+                wScan=0,
+                dwFlags=0,
+                time=0,
+                dwExtraInfo=None,
+            )
+        ),
     )
     up = _INPUT(
         type=_INPUT_KEYBOARD,
-        ii=_INPUT_UNION(ki=_KEYBDINPUT(
-            wVk=vk, wScan=0, dwFlags=_KEYEVENTF_KEYUP, time=0, dwExtraInfo=None,
-        )),
+        ii=_INPUT_UNION(
+            ki=_KEYBDINPUT(
+                wVk=vk,
+                wScan=0,
+                dwFlags=_KEYEVENTF_KEYUP,
+                time=0,
+                dwExtraInfo=None,
+            )
+        ),
     )
     return down, up
 
