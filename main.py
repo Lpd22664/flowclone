@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import signal
+import subprocess
 import sys
 import threading
 import traceback
@@ -20,6 +21,7 @@ from hotkeys import HotkeyManager
 from audio import Recorder, MicNotFoundError
 from transcription import transcribe, TranscriptionError
 from ai_processor import cleanup, AIError
+import ai_processor
 from command_mode import CommandModeController
 from settings_window import SettingsDialog
 import llamacpp
@@ -45,6 +47,7 @@ class App(QObject):
     """Main controller. Lives on the Qt main thread."""
 
     open_settings_signal = pyqtSignal()
+    ai_unavailable_signal = pyqtSignal(str)  # reason; emitted by the health check
 
     def __init__(self, qt_app: QApplication):
         super().__init__()
@@ -76,12 +79,16 @@ class App(QObject):
 
         self.tray = Tray(
             on_open_settings=self._request_open_settings,
-            on_toggle_ai_cleanup=lambda _new: None,
+            on_toggle_ai_cleanup=lambda _new: self._check_ai_service(),
             on_quit=self._quit,
+            on_restart=self._restart,
         )
 
         self._settings_dialog: SettingsDialog | None = None
         self.open_settings_signal.connect(self._open_settings)
+        self.ai_unavailable_signal.connect(self._on_ai_unavailable)
+        self._ai_check_gen = 0  # newest health check wins
+        self.restart_requested = False
 
     # --- Lifecycle ------------------------------------------------------
 
@@ -108,6 +115,51 @@ class App(QObject):
 
         if config.missing_api_key:
             self.overlay.show_error_signal.emit("No API key — open Settings")
+
+        self._check_ai_service()
+
+    def _check_ai_service(self):
+        """Ping the cloud / custom AI provider in the background; if it fails,
+        cleanup is off for this run (config.json is not changed)."""
+        ai_processor.cleanup_unavailable = False
+        self._ai_check_gen += 1
+        if (
+            config.ai_provider == PROVIDER_LOCAL_LLAMA  # reports its own errors
+            or not config.get("ai_cleanup_enabled", True)
+            or config.missing_ai_key  # already reported as "No API key"
+        ):
+            return
+        threading.Thread(
+            target=self._ping_ai, args=(self._ai_check_gen,), daemon=True
+        ).start()
+
+    def _ping_ai(self, gen: int):
+        try:
+            ai_processor.ping()
+            return
+        except AIError as e:
+            reason = str(e)
+        if gen != self._ai_check_gen:  # settings changed meanwhile
+            return
+        ai_processor.cleanup_unavailable = True
+        self.ai_unavailable_signal.emit(reason)
+
+    @pyqtSlot(str)
+    def _on_ai_unavailable(self, reason: str):
+        print(
+            f"FlowClone: {config.ai_display_name} is unavailable, AI cleanup is "
+            f"disabled for this run: {reason}",
+            file=sys.stderr,
+        )
+        if len(reason) > 200:
+            reason = reason[:197] + "…"
+        self.overlay.show_error_signal.emit("AI offline, cleanup off")
+        self.tray.notify(
+            "FlowClone: AI cleanup disabled",
+            f"{config.ai_display_name} is not reachable: {reason}\n"
+            "Dictation still works without cleanup until the next start or "
+            "until Settings are saved.",
+        )
 
     def _apply_whisper_server(self):
         """Run whisper-server with the selected model iff the local provider is active."""
@@ -159,6 +211,11 @@ class App(QObject):
         whispercpp.server.stop()
         llamacpp.server.stop()
         self._qt_app.quit()
+
+    def _restart(self):
+        """Developer mode: quit, then main() starts a fresh process."""
+        self.restart_requested = True
+        self._quit()
 
     # --- Push-to-talk pipeline ------------------------------------------
 
@@ -255,7 +312,7 @@ class App(QObject):
             self.overlay.hide_signal.emit()
             return
 
-        ai_enabled = bool(config.get("ai_cleanup_enabled", True))
+        ai_enabled = ai_processor.cleanup_active()
         if ai_enabled:
             self.overlay.show_processing_signal.emit("AI processing")
         try:
@@ -310,6 +367,7 @@ class App(QObject):
         self.tray.refresh_icon()
         self._apply_whisper_server()
         self._apply_llama_server()
+        self._check_ai_service()
 
     # --- Errors ---------------------------------------------------------
 
@@ -326,6 +384,22 @@ class App(QObject):
 
 def _excepthook(exc_type, exc, tb):
     traceback.print_exception(exc_type, exc, tb)
+
+
+def _relaunch():
+    """Start FlowClone again with the same interpreter and arguments."""
+    if getattr(sys, "frozen", False):
+        args = [sys.executable, *sys.argv[1:]]
+    else:
+        args = [sys.executable, *sys.orig_argv[1:]]
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if sys.platform == "win32":
+        # os.execv on Windows spawns anyway and mangles quoting.
+        subprocess.Popen(args)
+    else:
+        # Same PID, so the terminal / service manager keeps tracking it.
+        os.execv(args[0], args)
 
 
 def main():
@@ -376,6 +450,9 @@ def main():
         controller._quit()
     except Exception:
         pass
+    if controller.restart_requested:
+        print("FlowClone: restarting.", file=sys.stderr)
+        _relaunch()
     sys.exit(rc)
 
 

@@ -108,11 +108,13 @@ class Tray:
         on_toggle_ai_cleanup: Callable[[bool], None],
         on_quit: Callable[[], None],
         on_relaunch_admin: Callable[[], None] | None = None,
+        on_restart: Callable[[], None] | None = None,
     ):
         self._on_open_settings = on_open_settings
         self._on_toggle_ai_cleanup = on_toggle_ai_cleanup
         self._on_quit = on_quit
         self._on_relaunch_admin = on_relaunch_admin or elevation.relaunch_as_admin
+        self._on_restart = on_restart
         self._icon: pystray.Icon | None = None
         self._thread: threading.Thread | None = None
 
@@ -131,6 +133,11 @@ class Tray:
 
         def quit_app(_icon, _item):
             self._on_quit()
+            if self._icon is not None:
+                self._icon.stop()
+
+        def restart_app(_icon, _item):
+            self._on_restart()
             if self._icon is not None:
                 self._icon.stop()
 
@@ -157,6 +164,8 @@ class Tray:
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("Run as administrator", run_as_admin))
         items.append(pystray.Menu.SEPARATOR)
+        if self._on_restart and config.get("developer_mode", False):
+            items.append(pystray.MenuItem("Restart", restart_app))
         items.append(pystray.MenuItem("Quit", quit_app))
 
         return pystray.Menu(*items)
@@ -192,6 +201,13 @@ class Tray:
         if self._icon is not None:
             self._icon.icon = _icon_image()
 
+    def notify(self, title: str, message: str):
+        if self._icon is not None:
+            try:
+                self._icon.notify(message, title)
+            except Exception:
+                pass
+
 
 class _QtTray:
     """Linux tray built on QSystemTrayIcon. Same interface as Tray. Must be
@@ -203,13 +219,16 @@ class _QtTray:
         on_toggle_ai_cleanup: Callable[[bool], None],
         on_quit: Callable[[], None],
         on_relaunch_admin: Callable[[], None] | None = None,
+        on_restart: Callable[[], None] | None = None,
     ):
         self._on_open_settings = on_open_settings
         self._on_toggle_ai_cleanup = on_toggle_ai_cleanup
         self._on_quit = on_quit
+        self._on_restart = on_restart
         self._icon = None
         self._menu = None
         self._ai_action = None
+        self._restart_action = None
 
     def _toggle_ai(self, checked: bool):
         config.set("ai_cleanup_enabled", bool(checked))
@@ -237,6 +256,11 @@ class _QtTray:
         self._ai_action.setCheckable(True)
         self._ai_action.toggled.connect(self._toggle_ai)
         self._menu.addSeparator()
+        if self._on_restart:
+            self._restart_action = self._menu.addAction("Restart")
+            self._restart_action.triggered.connect(
+                lambda _checked=False: self._on_restart()
+            )
         self._menu.addAction("Quit").triggered.connect(
             lambda _checked=False: self._on_quit()
         )
@@ -265,11 +289,21 @@ class _QtTray:
         if self._icon is not None:
             self._icon.setIcon(self._qicon())
 
+    def notify(self, title: str, message: str):
+        from PyQt6.QtWidgets import QSystemTrayIcon
+
+        if self._icon is not None:
+            self._icon.showMessage(
+                title, message, QSystemTrayIcon.MessageIcon.Warning, 10000
+            )
+
     def refresh_menu(self):
         if self._ai_action is not None:
             self._ai_action.blockSignals(True)
             self._ai_action.setChecked(bool(config.get("ai_cleanup_enabled", True)))
             self._ai_action.blockSignals(False)
+        if self._restart_action is not None:
+            self._restart_action.setVisible(bool(config.get("developer_mode", False)))
 
 
 if sys.platform != "win32":

@@ -15,5 +15,6 @@
     "local_llm_url": "http://192.168.1.208:8080/v1",
     "local_llm_model": "llama3.2",
     "llama_model": "smollm2-1.7b-instruct-q4_k_m",
-    "color_scheme": "system"
+    "color_scheme": "system",
+    "developer_mode": true
 }

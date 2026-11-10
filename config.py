@@ -107,6 +107,7 @@ DEFAULTS = {
     "local_llm_model": "llama3.2",
     "llama_model": "smollm2-1.7b-instruct-q4_k_m",  # see llamacpp.MODELS
     "color_scheme": "system",  # "system", "dark" or "light"
+    "developer_mode": False,
 }
 
 # Per-provider model + endpoint config.

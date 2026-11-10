@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 )
 
 import autostart
+import ai_processor
 import desktop_entry
 import llamacpp
 import theme
@@ -725,6 +726,7 @@ def _describe_whisper_model(name: str) -> list[str]:
 
 class SettingsDialog(QDialog):
     saved = pyqtSignal()
+    _api_test_finished = pyqtSignal(str)  # error message, "" on success
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -749,8 +751,10 @@ class SettingsDialog(QDialog):
         page.setSpacing(16)
 
         subheading = QLabel(
-            "API keys are stored locally in .env. Pick a provider — Groq is free "
-            "(console.groq.com) and uses whisper-large-v3-turbo + llama-3.3-70b.",
+            "Hold the push-to-talk hotkey, speak, and the cleaned-up text is pasted "
+            "at your cursor. Pick a transcription and an AI provider below: Groq is "
+            "free, OpenAI is paid, and the local options work offline. API keys "
+            "stay on this computer.",
             self,
         )
         subheading.setObjectName("subheading")
@@ -847,6 +851,20 @@ class SettingsDialog(QDialog):
             llamacpp, config.get("llama_model", ""), parent=self
         )
         form.addRow("llama.cpp model", self._llama_model)
+
+        # Tests the values in the form, saved or not.
+        self._api_test = QWidget(self)
+        api_test_row = QHBoxLayout(self._api_test)
+        api_test_row.setContentsMargins(0, 0, 0, 0)
+        self._api_test_btn = QPushButton("Test API Connection", self._api_test)
+        self._api_test_btn.clicked.connect(self._on_api_test_clicked)
+        api_test_row.addWidget(self._api_test_btn, alignment=Qt.AlignmentFlag.AlignTop)
+        self._api_test_status = QLabel("", self._api_test)
+        self._api_test_status.setObjectName("footnote")
+        self._api_test_status.setWordWrap(True)
+        api_test_row.addWidget(self._api_test_status, stretch=1)
+        self._api_test_finished.connect(self._on_api_test_finished)
+        form.addRow("", self._api_test)
 
         # --- API keys (only rows for selected providers are shown) ---
         self._api_keys_section = add_section("API keys")
@@ -951,6 +969,10 @@ class SettingsDialog(QDialog):
             self._autostart.setToolTip(no_autostart_tip)
         form.addRow("", self._autostart)
 
+        self._developer_mode = QCheckBox("Developer mode")
+        self._developer_mode.setChecked(bool(config.get("developer_mode", False)))
+        form.addRow("", self._developer_mode)
+
         if sys.platform != "win32":
             self._desktop_entry_btn = QPushButton(self)
             self._desktop_entry_btn.setToolTip(
@@ -1020,6 +1042,12 @@ class SettingsDialog(QDialog):
             self._llama_model,
             self._ai_provider.currentData() == PROVIDER_LOCAL_LLAMA,
         )
+        # llama.cpp is started and checked by FlowClone itself.
+        self._form.setRowVisible(
+            self._api_test,
+            self._ai_provider.currentData() != PROVIDER_LOCAL_LLAMA,
+        )
+        self._api_test_status.setText("")
         self._form.setRowVisible(self._openai_key, PROVIDER_OPENAI in selected)
         self._form.setRowVisible(self._groq_key, PROVIDER_GROQ in selected)
         needs_key = bool({PROVIDER_OPENAI, PROVIDER_GROQ} & selected)
@@ -1027,6 +1055,45 @@ class SettingsDialog(QDialog):
             self._form.setRowVisible(widget, needs_key)
         if self.isVisible():
             self.adjustSize()  # shrink when rows get hidden
+
+    def _on_api_test_clicked(self):
+        provider = self._ai_provider.currentData() or PROVIDER_OPENAI
+        if provider == PROVIDER_LOCAL_LLM:
+            base_url = self._local_llm_url.text().strip()
+            model = self._local_llm_model.text().strip()
+            api_key = ""
+            if not (base_url and model):
+                self._on_api_test_finished("Set the Custom LLM URL and model.")
+                return
+        else:
+            spec = PROVIDER_SPEC[provider]
+            base_url, model = spec["base_url"], spec["chat_model"]
+            key_edit = self._groq_key if provider == PROVIDER_GROQ else self._openai_key
+            api_key = key_edit.text().strip()
+            if not api_key:
+                self._on_api_test_finished(f"No API key for {spec['display']}.")
+                return
+        self._api_test_btn.setEnabled(False)
+        self._api_test_status.setStyleSheet("")
+        self._api_test_status.setText("Testing…")
+        threading.Thread(
+            target=self._api_test_worker, args=(base_url, api_key, model), daemon=True
+        ).start()
+
+    def _api_test_worker(self, base_url: str | None, api_key: str, model: str):
+        try:
+            ai_processor.ping(base_url, api_key, model)
+            error = ""
+        except ai_processor.AIError as e:
+            error = str(e) or "Unknown error"
+        self._api_test_finished.emit(error)
+
+    def _on_api_test_finished(self, error: str):
+        self._api_test_btn.setEnabled(True)
+        if error and len(error) > 300:
+            error = error[:297] + "…"
+        self._api_test_status.setStyleSheet("" if error else "color: #30d158;")
+        self._api_test_status.setText(f"Failed: {error}" if error else "Connection OK.")
 
     def _update_desktop_entry_btn(self):
         self._desktop_entry_btn.setText(
@@ -1074,6 +1141,7 @@ class SettingsDialog(QDialog):
         transform_hk = self._transform_hk.value() or "ctrl+shift+y"
         color_scheme = self._color_scheme.currentData() or theme.SCHEME_SYSTEM
         ai_enabled = self._ai.isChecked()
+        developer_mode = self._developer_mode.isChecked()
         dict_text = self._dictionary.toPlainText()
 
         try:
@@ -1095,6 +1163,7 @@ class SettingsDialog(QDialog):
             config.set("selection_transform_hotkey", transform_hk)
             config.set("color_scheme", color_scheme)
             config.set("ai_cleanup_enabled", ai_enabled)
+            config.set("developer_mode", developer_mode)
             config.save()
             config.save_dictionary(dict_text)
         except Exception as e:

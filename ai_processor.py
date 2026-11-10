@@ -2,7 +2,7 @@
 
 import time
 
-from openai import OpenAI, APIConnectionError, APITimeoutError
+from openai import OpenAI, APIConnectionError, APITimeoutError, Timeout
 
 from config import config, scrub_secrets, PROVIDER_LOCAL_LLAMA, PROVIDER_LOCAL_LLM
 import llamacpp
@@ -79,6 +79,15 @@ class AIError(RuntimeError):
     pass
 
 
+# Set by the startup health check when the AI service is unreachable: cleanup
+# is skipped for this run only, config.json is left untouched.
+cleanup_unavailable = False
+
+
+def cleanup_active() -> bool:
+    return bool(config.get("ai_cleanup_enabled", True)) and not cleanup_unavailable
+
+
 def _llama_server_url() -> str:
     """Base URL of the bundled llama-server, starting it if needed."""
     try:
@@ -138,10 +147,32 @@ def _chat(messages: list[dict], max_tokens: int = 1000) -> str:
     raise AIError(scrub_secrets(last_err) if last_err else "Unknown error")
 
 
+def ping(
+    base_url: str | None = None, api_key: str = "", model: str | None = None
+) -> None:
+    """Health check: one-token completion, no retries. Raises AIError.
+
+    Uses the saved config unless `model` is given (unsaved Settings values)."""
+    if model is None:
+        client, model = _client(), config.chat_model
+    else:
+        client = OpenAI(api_key=api_key or "local", base_url=base_url)
+    client = client.with_options(max_retries=0, timeout=Timeout(30.0, connect=5.0))
+    try:
+        client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            temperature=0,
+            max_tokens=1,
+        )
+    except Exception as e:
+        raise AIError(scrub_secrets(e)) from e
+
+
 def cleanup(transcript: str) -> str:
     if not transcript.strip():
         return ""
-    if not config.get("ai_cleanup_enabled", True):
+    if not cleanup_active():
         return transcript.strip()
 
     messages: list[dict] = [{"role": "system", "content": CLEANUP_SYSTEM_PROMPT}]
